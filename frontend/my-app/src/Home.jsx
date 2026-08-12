@@ -25,6 +25,10 @@ import {
 // Backend that issues and checks the school-admin email confirmation code.
 const API_BASE = "http://localhost:5000";
 
+// localStorage key the admin session token is kept under, so a page
+// refresh on /dashboard/schoolAdmin doesn't lose the sign-in.
+const ADMIN_SESSION_KEY = "ecw_admin_session";
+
 // Steps shown while we "connect" — gives the loading circle a real internet-connection feel
 const LOADING_STEPS = [
   'loading...',
@@ -490,11 +494,14 @@ useEffect(() => {
     return () => clearInterval(interval);
   }, []);
 
-  const handleNavigate = (path) => {
+  // `state` (optional) is handed straight to react-router's navigate so a
+  // destination page — like Admin.jsx — can read it via useLocation().state
+  // without waiting on a network round trip.
+  const handleNavigate = (path, state) => {
     // show loading popup for a short time, then navigate
     setIsRegisterLoading(true);
     setTimeout(() => {
-      navigate(path);
+      navigate(path, state ? { state } : undefined);
     }, 1800); // 1.8 seconds loading popup
   };
 
@@ -591,11 +598,13 @@ useEffect(() => {
 
       // Same principle as registration: only a genuine positive response from the
       // backend — which only happens if the code we emailed was typed back correctly —
-      // is allowed to open the dashboard.
+      // is allowed to open the dashboard. On success `home.js` also hands back a
+      // session token and the school's details, which we hand off to Admin.jsx.
       if (response.ok && result.success) {
+        localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ token: result.token, school: result.school }));
         setOtpModalOpen(false);
         setPendingAdminAuth(null);
-        handleNavigate('/dashboard/schoolAdmin');
+        handleNavigate('/dashboard/schoolAdmin', { token: result.token, school: result.school });
       } else {
         setOtpError(result.message || 'That code is not correct. Please try again.');
       }

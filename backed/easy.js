@@ -1,3 +1,4 @@
+import logo from './assets/logo.jpg';
 require("dotenv").config();
 
 const express = require("express");
@@ -5,10 +6,18 @@ const cors = require("cors");
 const nodemailer = require("nodemailer");
 const pool = require("./db");
 
+// NEW — school-admin sign-in routes (request-code / verify-code / me / logout).
+// See home.js for details; this is what Home.jsx's "School admin" login card
+// and AdminOtpModal talk to, and what Admin.jsx uses to load the dashboard.
+const schoolAdminAuth = require("./home");
+
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Everything under /api/auth/school-admin/* is now handled by home.js
+app.use("/api/auth/school-admin", schoolAdminAuth.router);
 
 // ------------------------------------------------------------------
 // EMAIL SETUP (nodemailer + Gmail app password)
@@ -29,34 +38,41 @@ async function sendVerificationEmail(toEmail, otp) {
         console.log("Verification email not sent — GMAIL_USER / GMAIL_APP_PASSWORD not set in .env");
         return;
     }
+async function sendVerificationEmail(toEmail, otp) {
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+        console.log("Verification email not sent — GMAIL_USER / GMAIL_APP_PASSWORD not set in .env");
+        return;
+    }
+
+    // Replace 'https://yourdomain.com/logo.png' with your publicly hosted logo URL
+    const logoUrl = "https://yourdomain.com/logo.png";
+
+   import logo from './path/to/logo.png'; // or const logo = require('./path/to/logo.png');
+
+async function sendVerificationEmail(toEmail, otp) {
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+        console.log("Verification email not sent — GMAIL_USER / GMAIL_APP_PASSWORD not set in .env");
+        return;
+    }
+
     await transporter.sendMail({
         from: `"Easy Class Records" <${process.env.GMAIL_USER}>`,
         to: toEmail,
         subject: "Verify your email — Easy Class Records",
+        attachments: [
+            {
+                filename: 'logo.png',
+                path: logo, // Uses the imported logo variable
+                cid: 'logo_cid' // Content-ID for HTML embedding
+            }
+        ],
         html: `
-            <p>Hello,</p>
-            <p>Use the code below to verify your email and complete your school registration:</p>
-            <h2 style="letter-spacing:6px;">${otp}</h2>
-            <p>This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
-        `,
-    });
-}
-
-async function sendRegistrationEmail(toEmail, schoolName, schoolCode) {
-    if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
-        console.log("Email not sent — GMAIL_USER / GMAIL_APP_PASSWORD not set in .env");
-        return;
-    }
-    await transporter.sendMail({
-        from: `"Easy Class Records" <${process.env.GMAIL_USER}>`,
-        to: toEmail,
-        subject: "Your school has been registered",
-        html: `
-            <p>Hello,</p>
-            <p><strong>${schoolName}</strong> has been successfully registered on Easy Class Records.</p>
-            <p>Your school code is: <strong>${schoolCode}</strong></p>
-            <p>Keep this code safe — you'll need it to log in.</p>
-        `,
+            <!-- Inside your email HTML table header -->
+            <td align="center" style="background-color: #0f172a; padding: 30px 20px;">
+              <img src="cid:logo_cid" alt="Easy Class Records Logo" style="max-width: 140px; height: auto; display: block; border: 0;" />
+              <h1 style="color: #ffffff; font-size: 20px; margin: 15px 0 0 0; font-weight: 600; letter-spacing: -0.5px;">Easy Class Records</h1>
+            </td>
+        `
     });
 }
 
@@ -261,7 +277,7 @@ app.post("/api/schools/verify-email", async (req, res) => {
         }
 
         const registerAsValue = registeringAs === "other" ? "institution" : "school";
-        
+
         await client.query(
             `INSERT INTO school_details (school_id, register_as, email, phone, ownership_type, residence_type)
              VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -301,7 +317,7 @@ app.post("/api/schools/verify-email", async (req, res) => {
     } catch (error) {
         await client.query("ROLLBACK");
         console.log("Error in verify-email:", error);
-        
+
         if (error.code === "23505") {
             return res.status(400).json({ success: false, message: "Email or record already exists." });
         }
