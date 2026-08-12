@@ -1,0 +1,50 @@
+body{
+    padding:0;
+    margin:0;
+    box-sizing:border-box;
+}
+i{
+  font-size:17px;
+  margin-right:13px;
+  color:rgb(250, 210, 1)
+}
+.animating{
+  position:relative;
+  
+}
+.animating::before{
+  position:absolute;
+  content:'';
+  width:120%;
+  height:110%;
+  background:white;
+  box-shadow:2px 2px 2px 2px black;
+  text-align: center;
+
+  pointer-events: none;
+  opacity:20%;
+  
+}
+.books{
+  width:40px;
+  height:40px;
+  margin-left: auto;
+  margin-right:auto;
+  margin-bottom:10px;
+  position: relative;
+  animation-name:animate;
+  animation-duration:4s;
+  animation-timing-function:linear;
+  animation-iteration-count:infinite;
+  opacity:40%;
+}
+@keyframes animate{
+  0%{
+    transform:translate3d(3px);
+    
+  }
+  100%{
+    transform:rotate(360deg);
+
+  }
+}

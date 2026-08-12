@@ -1,0 +1,35 @@
+.rwanda-gradient-text {
+  text-align: center;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  margin: 1rem 0;
+  line-height: 1.2;
+}
+
+.rwanda-gradient-text span {
+  display: inline-block;
+  color: #111827;
+  font-weight: 500;
+  will-change: transform;
+  animation: professionalWave 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation-delay: calc(0.04s * var(--i));
+}
+
+/* Green color for the first letter of each word */
+.rwanda-gradient-text span:nth-child(1),
+.rwanda-gradient-text span:nth-child(7),
+.rwanda-gradient-text span:nth-child(13),
+.rwanda-gradient-text span:nth-child(21) {
+  color: #10B981;
+  font-weight: 800;
+}
+
+@keyframes professionalWave {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
