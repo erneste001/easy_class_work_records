@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const path = require("path");
 const pool = require("./db");
@@ -11,7 +12,37 @@ const schoolAdminAuth = require("./home");
 
 const app = express();
 
-app.use(cors());
+// ------------------------------------------------------------------
+// CORS
+// ------------------------------------------------------------------
+// FIX: cors() with no options allows ANY origin to call this API. That's
+// fine for local dev but not for production. Set ALLOWED_ORIGINS in .env
+// as a comma-separated list (e.g. "https://easyclasswork.rw,https://www.easyclasswork.rw")
+// once you deploy. If ALLOWED_ORIGINS isn't set, we fall back to allowing
+// everything so local dev keeps working without extra setup.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    // No origin (curl, server-to-server, same-origin) or no restriction configured -> allow.
+    if (!origin || allowedOrigins.length === 0) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+};
+
+if (allowedOrigins.length === 0) {
+  console.log(
+    "\n⚠️  ALLOWED_ORIGINS not set in .env — CORS is currently open to any origin.\n" +
+    "    Before deploying, add e.g.:\n" +
+    "    ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com\n"
+  );
+}
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Everything under /api/auth/school-admin/* is handled by home.js
@@ -32,50 +63,8 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
- * Sends OTP email with an inline embedded logo image.
- */
-async function sendVerificationEmail(toEmail, otp) {
-  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
-    console.log("Verification email not sent — GMAIL_USER / GMAIL_APP_PASSWORD not set in .env");
-    return;
-  }
-
-  // Resolve absolute path to your local image relative to this file
-  const logoPath = path.join(__dirname, "assets", "logo.jpg");
-
-  await transporter.sendMail({
-    from: `"Easy Class Records" <${process.env.GMAIL_USER}>`,
-    to: toEmail,
-    subject: "Verify your email — Easy Class Records",
-    attachments: [
-      {
-        filename: "logo.jpg",
-        path: logoPath,
-        cid: "logo_cid", // Content-ID referenced in HTML below
-      },
-    ],
-    html: `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
-        <div style="background-color: #0f172a; padding: 30px 20px; text-align: center;">
-          <!-- Embedded CID image reference -->
-          <img src="cid:logo_cid" alt="Easy Class Records Logo" style="max-width: 120px; height: auto; display: block; margin: 0 auto; border: 0;" />
-          <h1 style="color: #ffffff; font-size: 20px; margin: 15px 0 0 0; font-weight: 600; letter-spacing: -0.5px;">Easy Class Records</h1>
-        </div>
-        <div style="padding: 30px 20px; text-align: center; color: #334155;">
-          <h2 style="font-size: 18px; margin-bottom: 10px;">Verification Code</h2>
-          <p style="font-size: 14px; color: #64748b; margin-bottom: 20px;">Use the code below to complete your registration:</p>
-          <div style="background-color: #f1f5f9; font-size: 28px; font-weight: bold; letter-spacing: 4px; padding: 15px; border-radius: 6px; display: inline-block; color: #0f172a;">
-            ${otp}
-          </div>
-          <p style="font-size: 12px; color: #94a3b8; margin-top: 20px;">This code expires in 10 minutes.</p>
-        </div>
-      </div>
-    `,
-  });
-}
-
-/**
- * Optional email sent upon successful registration.
+ * Sent right after a school is created via Google-verified email —
+ * confirms the school code and tells them payment + admin review are next.
  */
 async function sendRegistrationEmail(toEmail, schoolName, schoolCode) {
   if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return;
@@ -85,7 +74,7 @@ async function sendRegistrationEmail(toEmail, schoolName, schoolCode) {
   await transporter.sendMail({
     from: `"Easy Class Records" <${process.env.GMAIL_USER}>`,
     to: toEmail,
-    subject: "Registration Successful — Easy Class Records",
+    subject: "Registration received — Easy Class Records",
     attachments: [
       {
         filename: "logo.jpg",
@@ -99,8 +88,42 @@ async function sendRegistrationEmail(toEmail, schoolName, schoolCode) {
           <img src="cid:logo_cid" alt="Logo" style="max-width: 100px; height: auto;" />
           <h2 style="color: #0f172a;">Welcome, ${schoolName}!</h2>
         </div>
-        <p>Your registration is complete. Your official school code is:</p>
-        <h3 style="background-color: #f1f5f9; padding: 10px; text-align: center; color: #2563eb;">${schoolCode}</h3>
+        <p>We've confirmed your email through Google. Your school code is:</p>
+        <h3 style="background-color: #f1f5f9; padding: 10px; text-align: center; color: #1E9E5A;">${schoolCode}</h3>
+        <p>Next: pay the registration fee, then our team reviews and approves your school before your admin account can sign in.</p>
+      </div>
+    `,
+  });
+}
+
+/**
+ * Sent right after a teacher/student registers via Google-verified email —
+ * confirms we received the request and that school admin approval is next.
+ */
+async function sendUserRegistrationEmail(toEmail, fullName, schoolName, role) {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return;
+
+  const logoPath = path.join(__dirname, "assets", "logo.jpg");
+
+  await transporter.sendMail({
+    from: `"Easy Class Records" <${process.env.GMAIL_USER}>`,
+    to: toEmail,
+    subject: "Registration received — Easy Class Records",
+    attachments: [
+      {
+        filename: "logo.jpg",
+        path: logoPath,
+        cid: "logo_cid",
+      },
+    ],
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <div style="text-align: center;">
+          <img src="cid:logo_cid" alt="Logo" style="max-width: 100px; height: auto;" />
+          <h2 style="color: #0f172a;">Hi ${fullName},</h2>
+        </div>
+        <p>We've confirmed your email through Google and submitted your ${role} request to <strong>${schoolName}</strong>.</p>
+        <p>Their admin will review it — you'll be able to sign in with the same Google account as soon as it's approved.</p>
       </div>
     `,
   });
@@ -145,10 +168,6 @@ function generateSchoolCode(district) {
   return `${prefix}-${suffix}`;
 }
 
-function generateOtp() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
 function validateRegistrationBody(body) {
   const {
     province, district, sector, cell, village,
@@ -190,94 +209,61 @@ app.get("/test-db", async (req, res) => {
   }
 });
 
-// STEP 1 — Request Verification Code
-app.post("/api/schools/request-verification", async (req, res) => {
-  const validationError = validateRegistrationBody(req.body);
-  if (validationError) {
-    return res.status(400).json({ success: false, message: validationError });
-  }
-
-  const { schoolEmail } = req.body;
-
+// Verified schools only — this is what fills the school dropdown on the
+// student/teacher registration form. Includes school_code because the
+// registration form needs to send it back on /api/users/register-google.
+app.get("/api/schools/public", async (req, res) => {
   try {
-    const existingEmail = await pool.query(
-      "SELECT 1 FROM school_details WHERE LOWER(email) = LOWER($1)",
-      [schoolEmail]
+    const result = await pool.query(
+      `SELECT id, name, school_code FROM schools WHERE status = 'active' ORDER BY name ASC`
     );
-
-    if (existingEmail.rows.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "A school with this email address is already registered.",
-      });
-    }
-
-    const otp = generateOtp();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-    await pool.query("DELETE FROM email_verifications WHERE email = $1 AND verified = FALSE", [schoolEmail]);
-
-    await pool.query(
-      `INSERT INTO email_verifications (email, otp_code, registration_data, expires_at)
-       VALUES ($1, $2, $3, $4)`,
-      [schoolEmail, otp, JSON.stringify(req.body), expiresAt]
-    );
-
-    await sendVerificationEmail(schoolEmail, otp);
-
-    res.json({ success: true, message: "Verification code sent to email." });
+    res.json({ success: true, schools: result.rows });
   } catch (error) {
     console.log(error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// STEP 2 — Verify Email and Complete Registration
-app.post("/api/schools/verify-email", async (req, res) => {
-  const { email, otp } = req.body;
-
-  if (!email || !otp) {
-    return res.status(400).json({ success: false, message: "Email and code are required." });
+// ------------------------------------------------------------------
+// SCHOOL REGISTRATION — email is verified by signing in with Google on the
+// client, so there's no separate "type in the code we emailed you" step,
+// and no email input field at all. The moment the person confirms a Google
+// account, this route runs, checks the email isn't already registered, and
+// creates the school right away with status = 'pending_payment'.
+//
+// SECURITY NOTE: in production, verify req.body's implied identity by also
+// sending the raw Google ID token (GoogleAuthButton already returns it as
+// `idToken`) and checking it server-side with `firebase-admin`
+// before trusting schoolEmail — don't just trust whatever the client sends.
+// ------------------------------------------------------------------
+app.post("/api/schools/register-with-google", async (req, res) => {
+  const validationError = validateRegistrationBody(req.body);
+  if (validationError) {
+    return res.status(400).json({ success: false, message: validationError });
   }
+
+  const {
+    registeringAs, province, district, sector, cell, village,
+    schoolName, schoolEmail, phone, levels, ownership, residence,
+  } = req.body;
 
   const client = await pool.connect();
   try {
-    const lookup = await client.query(
-      `SELECT * FROM email_verifications
-       WHERE email = $1 AND otp_code = $2 AND verified = FALSE
-       ORDER BY created_at DESC LIMIT 1`,
-      [email, otp]
-    );
-
-    if (lookup.rows.length === 0) {
-      return res.status(400).json({ success: false, message: "Invalid verification code." });
-    }
-
-    const record = lookup.rows[0];
-    if (new Date() > new Date(record.expires_at)) {
-      return res.status(400).json({ success: false, message: "Code expired. Please request a new one." });
-    }
-
-    const data = record.registration_data;
-    const {
-      registeringAs, province, district, sector, cell, village,
-      schoolName, schoolEmail, phone, levels, ownership, residence
-    } = data;
-
     await client.query("BEGIN");
 
-    const checkEmail = await client.query(
-      "SELECT 1 FROM school_details WHERE LOWER(email) = LOWER($1)",
+    const existingEmail = await client.query(
+      "SELECT 1 FROM schools WHERE LOWER(email) = LOWER($1)",
       [schoolEmail]
     );
-
-    if (checkEmail.rows.length > 0) {
+    if (existingEmail.rows.length > 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
-        message: "A school with this email address is already registered.",
+        message: "A school with this Google account's email is already registered.",
       });
     }
+
+    const registerAsValue = registeringAs === "other" ? "other" : "school";
 
     let schoolId;
     let schoolCode;
@@ -287,49 +273,30 @@ app.post("/api/schools/verify-email", async (req, res) => {
       schoolCode = generateSchoolCode(district);
       try {
         const schoolResult = await client.query(
-          `INSERT INTO schools (school_name, school_code) VALUES ($1, $2) RETURNING school_id`,
-          [schoolName, schoolCode]
+          `INSERT INTO schools
+             (registering_as, name, email, phone, province, district, sector, cell, village,
+              ownership, residence_type, email_verified_at, school_code, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), $12, 'pending_payment')
+           RETURNING id`,
+          [registerAsValue, schoolName, schoolEmail, phone, province, district, sector, cell, village,
+           ownership, residence, schoolCode]
         );
-        schoolId = schoolResult.rows[0].school_id;
+        schoolId = schoolResult.rows[0].id;
         inserted = true;
       } catch (err) {
         if (err.code === "23505" && err.constraint === "schools_school_code_key") {
-          continue;
+          continue; // collision on the random code — try another
         }
         throw err;
       }
     }
 
-    const registerAsValue = registeringAs === "other" ? "institution" : "school";
-
-    await client.query(
-      `INSERT INTO school_details (school_id, register_as, email, phone, ownership_type, residence_type)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [schoolId, registerAsValue, schoolEmail, phone, ownership, residence]
-    );
-
-    await client.query(
-      `INSERT INTO school_locations (school_id, province, district, sector, cell, village)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [schoolId, province, district, sector, cell, village]
-    );
-
     for (const levelKey of levels) {
-      const levelResult = await client.query(
-        `SELECT level_id FROM levels WHERE LOWER(level_name) = LOWER($1)`,
-        [levelKey]
-      );
-      if (levelResult.rows.length === 0) continue;
       await client.query(
-        `INSERT INTO school_levels_map (school_id, level_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [schoolId, levelResult.rows[0].level_id]
+        `INSERT INTO school_levels (school_id, level) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [schoolId, String(levelKey).toLowerCase()]
       );
     }
-
-    await client.query(
-      `UPDATE email_verifications SET verified = TRUE WHERE id = $1`,
-      [record.id]
-    );
 
     await client.query("COMMIT");
 
@@ -340,21 +307,19 @@ app.post("/api/schools/verify-email", async (req, res) => {
     res.json({ success: true, schoolId, schoolCode });
   } catch (error) {
     await client.query("ROLLBACK");
-    console.log("Error in verify-email:", error);
-
+    console.log("Error in register-with-google:", error);
     if (error.code === "23505") {
-      return res.status(400).json({ success: false, message: "Email or record already exists." });
+      return res.status(400).json({ success: false, message: "That email is already registered." });
     }
-
     res.status(500).json({ success: false, message: error.message });
   } finally {
     client.release();
   }
 });
 
-// STEP 3 — Initiate Payment
-const DEFAULT_RECIPIENT_ACCOUNT = "0788000000";
-
+// ------------------------------------------------------------------
+// PAYMENT
+// ------------------------------------------------------------------
 app.post("/api/payments/initiate", async (req, res) => {
   const { schoolId, provider, payerPhone, amount } = req.body;
 
@@ -369,17 +334,19 @@ app.post("/api/payments/initiate", async (req, res) => {
 
   try {
     await pool.query(
-      `INSERT INTO payments (school_id, provider, payer_phone, recipient_account, amount, transaction_ref, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'processing')`,
-      [schoolId, provider, payerPhone, DEFAULT_RECIPIENT_ACCOUNT, amount, transactionRef]
+      `INSERT INTO payments (school_id, provider, payer_phone, amount, transaction_ref, status)
+       VALUES ($1, $2, $3, $4, $5, 'processing')`,
+      [schoolId, provider, payerPhone, amount, transactionRef]
     );
 
+    // Simulated provider callback. Swap this for a real webhook in production.
     setTimeout(async () => {
       try {
         await pool.query(`UPDATE payments SET status = 'success' WHERE transaction_ref = $1`, [transactionRef]);
 
+        // Payment done -> school now waits on a super admin to approve it.
         const schoolRes = await pool.query(
-          `SELECT school_code FROM schools WHERE school_id = $1`,
+          `UPDATE schools SET status = 'pending_review' WHERE id = $1 AND status = 'pending_payment' RETURNING school_code`,
           [schoolId]
         );
         if (schoolRes.rows.length > 0) {
@@ -400,7 +367,6 @@ app.post("/api/payments/initiate", async (req, res) => {
   }
 });
 
-// STEP 4 — Check Payment Status
 app.get("/api/payments/status/:transactionRef", async (req, res) => {
   const { transactionRef } = req.params;
   try {
@@ -415,6 +381,232 @@ app.get("/api/payments/status/:transactionRef", async (req, res) => {
   }
 });
 
-app.listen(5000, () => {
-  console.log("Server running on port 5000");
+// ------------------------------------------------------------------
+// TEACHER / STUDENT — Google sign-in only, never a password, never a typed
+// email. `email` here always comes from the client's Google ID token (see
+// GoogleAuthButton.jsx / StudentTeacherRegistration.jsx) — there is no form
+// field for it anywhere in the app.
+//
+// SECURITY NOTE: as above, verify the Google ID token server-side
+// (`firebase-admin`) before trusting { email, googleSub } in production.
+// ------------------------------------------------------------------
+app.post("/api/users/register-google", async (req, res) => {
+  const { role, fullName, email, googleSub, schoolId, schoolCode } = req.body;
+
+  if (!["student", "teacher"].includes(role)) {
+    return res.status(400).json({ success: false, message: "Invalid role." });
+  }
+  if (!fullName || !email || !googleSub || !schoolId || !schoolCode) {
+    return res.status(400).json({ success: false, message: "Please fill in every field." });
+  }
+
+  try {
+    const schoolResult = await pool.query(
+      `SELECT id, name, school_code, status FROM schools WHERE id = $1`,
+      [schoolId]
+    );
+    if (schoolResult.rows.length === 0) {
+      return res.status(400).json({ success: false, message: "That school could not be found." });
+    }
+    const school = schoolResult.rows[0];
+
+    if (school.school_code.toUpperCase() !== String(schoolCode).toUpperCase()) {
+      return res.status(400).json({ success: false, message: "That school code doesn't match the school you selected." });
+    }
+    if (school.status !== "active") {
+      return res.status(403).json({ success: false, message: "This school hasn't been verified by our team yet." });
+    }
+
+    const existing = await pool.query(
+      "SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) OR google_sub = $2",
+      [email, googleSub]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ success: false, message: "An account with this Google email already exists." });
+    }
+
+    await pool.query(
+      `INSERT INTO users (role, full_name, email, google_sub, school_id, status)
+       VALUES ($1, $2, $3, $4, $5, 'pending_approval')`,
+      [role, fullName, email, googleSub, schoolId]
+    );
+
+    sendUserRegistrationEmail(email, fullName, school.name, role).catch((err) =>
+      console.log("User registration email failed:", err.message)
+    );
+
+    res.json({ success: true, message: "Registration submitted for school approval." });
+  } catch (error) {
+    console.log("Error in register-google:", error);
+    if (error.code === "23505") {
+      return res.status(400).json({ success: false, message: "An account with this Google email already exists." });
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Very small in-memory session store for teacher/student, same pattern as
+// home.js. Swap for Redis/JWT before going to production.
+const USER_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const userSessions = new Map();
+function createUserSession(user) {
+  const token = crypto.randomBytes(32).toString("hex");
+  userSessions.set(token, { ...user, expiresAt: Date.now() + USER_SESSION_TTL_MS });
+  return token;
+}
+
+app.post("/api/users/login-google", async (req, res) => {
+  const { role, email, googleSub } = req.body;
+
+  if (!["student", "teacher"].includes(role) || !email || !googleSub) {
+    return res.status(400).json({ success: false, message: "Missing sign-in details." });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT id, role, full_name, email, school_id, status
+       FROM users WHERE google_sub = $1 AND role = $2`,
+      [googleSub, role]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({ success: false, message: "No account found for this Google sign-in. Please register first." });
+    }
+
+    const user = result.rows[0];
+    if (user.status !== "pending") {
+      return res.status(403).json({
+        success: false,
+        message: user.status === "rejected"
+          ? "Your account was not approved by your school admin."
+          : "Your account is still waiting for approval from your school admin.",
+      });
+    }
+
+    const token = createUserSession({
+      userId: user.id,
+      role: user.role,
+      fullName: user.full_name,
+      email: user.email,
+      schoolId: user.school_id,
+    });
+
+    res.json({ success: true, token, user: { fullName: user.full_name, email: user.email, role: user.role } });
+  } catch (error) {
+    console.log("Error in login-google:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ------------------------------------------------------------------
+// SUPER ADMIN — reviews and approves/rejects newly registered schools.
+//
+// SUPERADMIN_EMAIL / SUPERADMIN_PASSWORD fall back to a working default if
+// they aren't set in .env, so the login route never refuses to work with
+// "Super admin is not configured on the server yet." You can (and should,
+// before deploying anywhere real) override these by adding your own values
+// to .env:
+//   SUPERADMIN_EMAIL=you@yourdomain.com
+//   SUPERADMIN_PASSWORD=something-only-you-know
+// ------------------------------------------------------------------
+const DEFAULT_SUPERADMIN_EMAIL = "admin@easyclass.rw";
+const DEFAULT_SUPERADMIN_PASSWORD = "EasyClass@2026";
+
+const SUPERADMIN_EMAIL = process.env.SUPERADMIN_EMAIL || DEFAULT_SUPERADMIN_EMAIL;
+const SUPERADMIN_PASSWORD = process.env.SUPERADMIN_PASSWORD || DEFAULT_SUPERADMIN_PASSWORD;
+
+if (!process.env.SUPERADMIN_EMAIL || !process.env.SUPERADMIN_PASSWORD) {
+  console.log(
+    `\n⚠️  SUPERADMIN_EMAIL / SUPERADMIN_PASSWORD not set in .env — using the default super admin login:\n` +
+    `    email:    ${DEFAULT_SUPERADMIN_EMAIL}\n` +
+    `    password: ${DEFAULT_SUPERADMIN_PASSWORD}\n` +
+    `    Add both to your .env file before this goes anywhere other people can reach it.\n`
+  );
+}
+
+const SUPERADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const superAdminSessions = new Map();
+
+function requireSuperAdminSession(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  const session = token ? superAdminSessions.get(token) : null;
+  if (!session || Date.now() > session.expiresAt) {
+    if (token) superAdminSessions.delete(token);
+    return res.status(401).json({ success: false, message: "Session expired. Please sign in again." });
+  }
+  next();
+}
+
+app.post("/api/auth/super-admin/login", (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: "Email and password are required." });
+  }
+  if (email.toLowerCase() !== SUPERADMIN_EMAIL.toLowerCase() || password !== SUPERADMIN_PASSWORD) {
+    return res.status(400).json({ success: false, message: "Incorrect email or password." });
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+  superAdminSessions.set(token, { email: SUPERADMIN_EMAIL, expiresAt: Date.now() + SUPERADMIN_SESSION_TTL_MS });
+  res.json({ success: true, token, email: SUPERADMIN_EMAIL });
+});
+
+// All schools, newest first — the super-admin dashboard renders this list
+// and lets the super admin approve or reject each one.
+app.get("/api/superadmin/schools", requireSuperAdminSession, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, email, phone, school_code, status, created_at
+       FROM schools ORDER BY created_at DESC`
+    );
+    res.json({ success: true, schools: result.rows });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post("/api/superadmin/schools/:id/approve", requireSuperAdminSession, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE schools SET status = 'active' WHERE id = $1 AND status != 'active' RETURNING id, name, status`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(400).json({ success: false, message: "School not found or already active." });
+    }
+    res.json({ success: true, school: result.rows[0] });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post("/api/superadmin/schools/:id/reject", requireSuperAdminSession, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE schools SET status = 'suspended' WHERE id = $1 RETURNING id, name, status`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(400).json({ success: false, message: "School not found." });
+    }
+    res.json({ success: true, school: result.rows[0] });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ------------------------------------------------------------------
+// FIX: port was hardcoded to 5000. Most hosts (Render, Railway, Heroku,
+// Fly.io, etc.) inject their own PORT env var and expect your app to
+// listen on it — a hardcoded port means the app never starts on those
+// platforms. Falls back to 5000 for local dev when PORT isn't set.
+// ------------------------------------------------------------------
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });

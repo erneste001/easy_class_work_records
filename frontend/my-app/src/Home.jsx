@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import logo from './assets/logo.jpg';
+import GoogleAuthButton from './GoogleAuthButton.jsx';
 import {
   BookOpen,
   ClipboardCheck,
@@ -20,14 +21,49 @@ import {
   Star,
   Trophy,
   Handshake,
+  Mail,
+  Clock3,
 } from "lucide-react";
 
-// Backend that issues and checks the school-admin email confirmation code.
+// Backend that issues and checks the school-admin email confirmation code,
+// and now also the teacher/student Google sign-up/sign-in routes.
 const API_BASE = "http://localhost:5000";
 
 // localStorage key the admin session token is kept under, so a page
 // refresh on /dashboard/schoolAdmin doesn't lose the sign-in.
 const ADMIN_SESSION_KEY = "ecw_admin_session";
+
+// localStorage key the super-admin session token is kept under.
+const SUPERADMIN_SESSION_KEY = "ecw_superadmin_session";
+
+// localStorage key the teacher/student session token is kept under.
+const USER_SESSION_KEY = "ecw_user_session";
+
+// ------------------------------------------------------------------
+// SUPER ADMIN — Google-gated sign-in.
+//
+// There is no email/password form for super admin anymore. Instead:
+//   1. The person signs in with Google, same widget as student/teacher.
+//   2. We check the Google account's email against this allowlist. Only an
+//      exact match is allowed through — everyone else is rejected client-side
+//      with no further requests made.
+//   3. If it matches, we transparently call the existing backend endpoint
+//      POST /api/auth/super-admin/login using the platform's known super
+//      admin credentials (below) so the backend still issues a real session
+//      token that /api/superadmin/* routes will accept. The person never
+//      sees or types a password.
+//
+// NOTE: this keeps things working against the CURRENT backend (easy.js),
+// which still expects an email+password pair on that route and only knows
+// nothing about Google. The real fix is to update the backend to verify a
+// Google ID token directly and drop the password check entirely — until
+// that's done, BACKEND_SUPERADMIN_EMAIL / BACKEND_SUPERADMIN_PASSWORD below
+// must always match SUPERADMIN_EMAIL / SUPERADMIN_PASSWORD (or their
+// defaults) on the server, or this silent login call will fail.
+// ------------------------------------------------------------------
+const AUTHORIZED_SUPERADMIN_EMAIL = "honorgenius001@gmail.com";
+const BACKEND_SUPERADMIN_EMAIL = "admin@easyclass.rw";
+const BACKEND_SUPERADMIN_PASSWORD = "EasyClass@2026";
 
 // Steps shown while we "connect" — gives the loading circle a real internet-connection feel
 const LOADING_STEPS = [
@@ -37,34 +73,37 @@ const LOADING_STEPS = [
   'Almost there...',
 ];
 
-// Schools that have paid and been verified. In production this would come from the backend.
-const SCHOOLS = [
-  { id: 'lfhs', name: 'Liquidnet Family High School' },
-  { id: 'gha', name: 'Green Hills Academy' },
-  { id: 'gsr', name: 'GS Rubona' },
-];
-
-// Placeholder school code while real per-school codes are being rolled out.
+// Placeholder school code shown in input hints before schools are picked.
 const DEFAULT_SCHOOL_CODE = '1234';
 
 // Icons cycled through in the featured partners ad carousel (replaces the old image slideshow).
 const AD_CIRCLE_ICONS = [Star, Trophy, Handshake];
 
 // Every sign-in role the system supports, each with its own system icon (lucide-react,
-// no image import needed) and its own rules: who can self-register, and whether it
-// authenticates with a password or with a school code.
+// no image import needed) and its own rules: who can self-register, and how they
+// authenticate.
+//   - student / teacher -> Google sign-in only. We never collect or store a
+//     password for these roles. Continuing with Google both PROVES the email
+//     (that's the whole point — no typed code, no chance of a typo) and, for
+//     registration, submits the person to POST /api/users/register-google,
+//     which creates them "pending" until the school admin approves them.
+//   - schoolAdmin -> email + school code, then an emailed confirmation code.
+//     The backend refuses to even send that code until a super admin has
+//     approved the school (see home.js) — so nothing here can bypass that gate.
+//   - superAdmin -> Google sign-in only, gated by AUTHORIZED_SUPERADMIN_EMAIL
+//     above. No password field is shown anywhere in the app for this role.
 const ROLE_CONFIG = {
   student: {
     label: 'Student',
     icon: BookOpen,
     canRegister: true,
-    authField: 'password',
+    authField: 'google',
   },
   teacher: {
     label: 'Teacher',
     icon: GraduationCap,
     canRegister: true,
-    authField: 'password',
+    authField: 'google',
   },
   schoolAdmin: {
     label: 'School admin',
@@ -79,12 +118,14 @@ const ROLE_CONFIG = {
     label: 'Super admin',
     icon: ShieldCheck,
     canRegister: false,
-    authField: 'password',
+    authField: 'google',
   },
 };
 
 // Dropdown for picking a school. Renders as a checkbox list (single-select) with a "Verified" badge.
-function SchoolDropdown({ value, onChange, error }) {
+// `schools` comes from GET /api/schools/public — only schools a super admin has
+// already approved ever show up here, so the "Verified" badge is always true.
+function SchoolDropdown({ value, onChange, error, schools, loading }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
 
@@ -96,7 +137,7 @@ function SchoolDropdown({ value, onChange, error }) {
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
 
-  const selected = SCHOOLS.find((s) => s.id === value);
+  const selected = schools.find((s) => s.id === value);
 
   return (
     <div className="relative" ref={wrapRef}>
@@ -106,7 +147,7 @@ function SchoolDropdown({ value, onChange, error }) {
         className={`w-full flex items-center justify-between text-xs px-3 py-2.5 rounded-lg border bg-white text-left focus:outline-none ${error ? 'border-red-400' : 'border-neutral-200 focus:border-green-400'}`}
       >
         <span className={selected ? 'text-neutral-800' : 'text-neutral-400'}>
-          {selected ? selected.name : 'Select your school'}
+          {loading ? 'Loading schools…' : selected ? selected.name : 'Select your school'}
         </span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}>
           <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -115,7 +156,12 @@ function SchoolDropdown({ value, onChange, error }) {
 
       {open && (
         <div className="absolute z-20 mt-1.5 w-full bg-white border border-neutral-200 rounded-lg shadow-lg max-h-52 overflow-y-auto">
-          {SCHOOLS.map((school) => {
+          {schools.length === 0 && !loading && (
+            <p className="px-3 py-3 text-[11px] text-neutral-400">
+              No verified schools yet. Ask your school to register, then wait for it to be approved.
+            </p>
+          )}
+          {schools.map((school) => {
             const checked = value === school.id;
             return (
               <label
@@ -148,6 +194,25 @@ function SchoolDropdown({ value, onChange, error }) {
   );
 }
 
+// Shown once a Google account is attached to the registration/login form, so the
+// person always sees which account they're continuing with and can switch accounts.
+function GoogleAccountChip({ account, onSwitch }) {
+  return (
+    <div className="flex items-center gap-2.5 rounded-lg border border-[#178754]/25 bg-[#EAF6EF] px-3 py-2.5">
+      <span className="w-8 h-8 rounded-full bg-white flex items-center justify-center shrink-0 ring-1 ring-[#178754]/20">
+        <Mail size={14} className="text-[#178754]" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] font-bold text-neutral-800 truncate">{account.name}</p>
+        <p className="text-[10px] text-neutral-500 truncate">{account.email}</p>
+      </div>
+      <button type="button" onClick={onSwitch} className="text-[10px] font-bold text-[#178754] hover:underline shrink-0">
+        Switch
+      </button>
+    </div>
+  );
+}
+
 // Shared modal for login + registration, used by the student, teacher, school-admin and
 // super-admin flows. Always centered, with its own system icon in the header so it's
 // obvious at a glance which role you're signing in as.
@@ -164,12 +229,17 @@ function AuthModal({
   authSubmitting,
   onSubmitRegister,
   onSubmitLogin,
+  googleAccount,
+  onGoogleSignedIn,
+  onGoogleSwitch,
+  schools,
+  schoolsLoading,
 }) {
   const config = ROLE_CONFIG[role] || ROLE_CONFIG.student;
   const RoleIcon = config.icon;
   const roleLabel = config.label;
   const canRegister = config.canRegister;
-  const usesSchoolCodeLogin = config.authField === 'schoolCode';
+  const usesGoogle = config.authField === 'google';
 
   return (
     <div
@@ -207,20 +277,58 @@ function AuthModal({
           )}
 
           {mode === 'login' ? (
-            <form onSubmit={onSubmitLogin} className="flex flex-col gap-3">
-              <div>
-                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Email address</label>
-                <input
-                  type="email"
-                  required
-                  value={loginForm.email}
-                  onChange={(e) => setLoginForm((f) => ({ ...f, email: e.target.value }))}
-                  placeholder="you@example.com"
-                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-                />
-              </div>
+            usesGoogle ? (
+              // Student / teacher / super admin login: Google is the only credential.
+              //   - student/teacher: onSubmitLogin calls POST /api/users/login-google.
+              //   - superAdmin: onSubmitLogin checks the Google email against the
+              //     allowlist client-side, then transparently obtains a backend
+              //     session token — see handleLoginSubmit.
+              <form onSubmit={onSubmitLogin} className="flex flex-col gap-3">
+                <p className="text-[11px] text-neutral-500 -mt-1">
+                  {role === 'superAdmin'
+                    ? 'Sign in with the Google account authorized for platform administration.'
+                    : 'Sign in with the Google account you registered with. We only ever use it to confirm your email — no password to remember.'}
+                </p>
 
-              {usesSchoolCodeLogin ? (
+                {googleAccount ? (
+                  <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
+                ) : (
+                  <GoogleAuthButton onSignedIn={onGoogleSignedIn} />
+                )}
+
+                <button
+                  type="submit"
+                  disabled={!googleAccount || authSubmitting}
+                  className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {authSubmitting ? 'Signing in…' : 'Continue to dashboard'}
+                </button>
+
+                {canRegister && (
+                  <p className="text-center text-[11px] text-neutral-500 mt-1">
+                    Don't have an account?{' '}
+                    <button type="button" onClick={() => onSwitchMode('register')} className="font-bold text-[#178754] hover:underline">
+                      Register as {roleLabel.toLowerCase()}
+                    </button>
+                  </p>
+                )}
+              </form>
+            ) : (
+              // Only school admin reaches this branch now — email + school code,
+              // then a confirmation code is emailed (handled outside this modal).
+              <form onSubmit={onSubmitLogin} className="flex flex-col gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Email address</label>
+                  <input
+                    type="email"
+                    required
+                    value={loginForm.email}
+                    onChange={(e) => setLoginForm((f) => ({ ...f, email: e.target.value }))}
+                    placeholder="you@example.com"
+                    className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
+                  />
+                </div>
+
                 <div>
                   <label className="text-[11px] font-bold text-neutral-600 mb-1 block">School code</label>
                   <input
@@ -233,39 +341,96 @@ function AuthModal({
                   />
                   <p className="text-[10px] text-neutral-400 mt-1">
                     No password needed. After you continue, we'll email a confirmation code to this
-                    address — you'll enter it next to finish signing in.
+                    address — you'll enter it next to finish signing in. Your school also needs to
+                    have been approved by our team first.
                   </p>
                 </div>
-              ) : (
-                <div>
-                  <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={loginForm.password}
-                    onChange={(e) => setLoginForm((f) => ({ ...f, password: e.target.value }))}
-                    placeholder="••••••••"
-                    className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-                  />
-                </div>
-              )}
+
+                <button
+                  type="submit"
+                  disabled={authSubmitting}
+                  className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)] disabled:opacity-70 disabled:cursor-wait"
+                >
+                  {authSubmitting ? 'Sending confirmation code…' : 'Continue'}
+                </button>
+
+                {canRegister && (
+                  <p className="text-center text-[11px] text-neutral-500 mt-1">
+                    Don't have an account?{' '}
+                    <button type="button" onClick={() => onSwitchMode('register')} className="font-bold text-[#178754] hover:underline">
+                      Register as {roleLabel.toLowerCase()}
+                    </button>
+                  </p>
+                )}
+              </form>
+            )
+          ) : usesGoogle ? (
+            // Student / teacher registration: Google first — that's the ONLY
+            // place the email comes from, nobody types one in — then the
+            // school + school code, then submit. onSubmitRegister posts to
+            // POST /api/users/register-google, which creates the account as
+            // "pending" until the school admin approves it.
+            <form onSubmit={onSubmitRegister} className="flex flex-col gap-3">
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Your Google account</label>
+                {googleAccount ? (
+                  <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
+                ) : (
+                  <GoogleAuthButton onSignedIn={onGoogleSignedIn} label="Sign up with Google" />
+                )}
+                <p className="text-[10px] text-neutral-400 mt-1">
+                  We only take your name and email from Google — nothing else, and no password is stored.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Full name</label>
+                <input
+                  type="text"
+                  required
+                  disabled={!googleAccount}
+                  value={registerForm.fullName}
+                  onChange={(e) => setRegisterForm((f) => ({ ...f, fullName: e.target.value }))}
+                  placeholder="Full name"
+                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 disabled:bg-neutral-50 disabled:cursor-not-allowed"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">School</label>
+                <SchoolDropdown
+                  value={registerForm.school}
+                  onChange={(school) => setRegisterForm((f) => ({ ...f, school }))}
+                  schools={schools}
+                  loading={schoolsLoading}
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">School code</label>
+                <input
+                  type="text"
+                  required
+                  disabled={!googleAccount}
+                  value={registerForm.schoolCode}
+                  onChange={(e) => setRegisterForm((f) => ({ ...f, schoolCode: e.target.value }))}
+                  placeholder={`Given by your school (e.g. ${DEFAULT_SCHOOL_CODE})`}
+                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 disabled:bg-neutral-50 disabled:cursor-not-allowed"
+                />
+              </div>
 
               <button
                 type="submit"
-                disabled={authSubmitting}
-                className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)] disabled:opacity-70 disabled:cursor-wait"
+                disabled={!googleAccount || authSubmitting}
+                className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {authSubmitting ? 'Sending confirmation code…' : usesSchoolCodeLogin ? 'Continue' : 'Sign in'}
+                {authSubmitting ? 'Submitting…' : 'Submit for school approval'}
               </button>
 
-              {canRegister && (
-                <p className="text-center text-[11px] text-neutral-500 mt-1">
-                  Don't have an account?{' '}
-                  <button type="button" onClick={() => onSwitchMode('register')} className="font-bold text-[#178754] hover:underline">
-                    Register as {roleLabel.toLowerCase()}
-                  </button>
-                </p>
-              )}
+              <p className="text-center text-[11px] text-neutral-500 mt-1">
+                Already have an account?{' '}
+                <button type="button" onClick={() => onSwitchMode('login')} className="font-bold text-[rgb(22,32,111)] hover:underline">
+                  Sign in
+                </button>
+              </p>
             </form>
           ) : (
             <form onSubmit={onSubmitRegister} className="flex flex-col gap-3">
@@ -296,6 +461,8 @@ function AuthModal({
                 <SchoolDropdown
                   value={registerForm.school}
                   onChange={(school) => setRegisterForm((f) => ({ ...f, school }))}
+                  schools={schools}
+                  loading={schoolsLoading}
                 />
               </div>
               <div>
@@ -308,7 +475,6 @@ function AuthModal({
                   placeholder={`Given by your school (e.g. ${DEFAULT_SCHOOL_CODE})`}
                   className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
                 />
-                <p className="text-[10px] text-neutral-400 mt-1">Use {DEFAULT_SCHOOL_CODE} for now while schools are being onboarded.</p>
               </div>
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Password</label>
@@ -346,6 +512,37 @@ function AuthModal({
             </form>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Shown right after a student/teacher submits registration — their account is
+// created but sits "pending" until the school admin approves it.
+function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
+      role="dialog"
+      aria-modal="true"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="ecw-body bg-white w-full max-w-sm rounded-2xl shadow-2xl px-6 py-7 text-center">
+        <span className="w-12 h-12 rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-3 ring-1 ring-amber-200">
+          <Clock3 className="w-5 h-5 text-amber-600" />
+        </span>
+        <h3 className="ecw-heading text-base font-extrabold text-neutral-900 mb-1.5">Registration submitted</h3>
+        <p className="text-xs text-neutral-500 leading-relaxed mb-5">
+          Your {roleLabel.toLowerCase()} account is waiting for approval from {schoolName || 'your school'}'s
+          admin. You'll be able to sign in with the same Google account as soon as it's approved.
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 transition-opacity bg-[rgb(22,32,111)]"
+        >
+          Got it
+        </button>
       </div>
     </div>
   );
@@ -440,12 +637,34 @@ export default function EasyClassWork() {
   const [loadingStep, setLoadingStep] = useState(0);
   const [adCarouselIndex, setAdCarouselIndex] = useState(0);
 
+  // Real, super-admin-approved schools, fetched once on mount. Used by the
+  // SchoolDropdown inside student/teacher registration.
+  const [schools, setSchools] = useState([]);
+  const [schoolsLoading, setSchoolsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/schools/public`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data.success) setSchools(data.schools);
+      })
+      .catch(() => {
+        // Backend not reachable — leave the list empty rather than pretending
+        // schools exist; SchoolDropdown shows a clear "no verified schools" message.
+      })
+      .finally(() => {
+        if (!cancelled) setSchoolsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   // Login / registration modal state.
   // authView is null when closed, otherwise { role: 'student' | 'teacher' | 'schoolAdmin' | 'superAdmin', mode: 'login' | 'register' }
   const [authView, setAuthView] = useState(null);
   const [formError, setFormError] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
-  const [loginForm, setLoginForm] = useState({ email: '', password: '', schoolCode: '' });
+  const [loginForm, setLoginForm] = useState({ email: '', schoolCode: '' });
   const [registerForm, setRegisterForm] = useState({
     fullName: '',
     email: '',
@@ -454,6 +673,12 @@ export default function EasyClassWork() {
     password: '',
     confirmPassword: '',
   });
+
+  // The Google account attached to the current login/register attempt (student,
+  // teacher & super admin roles). Reset every time the modal is opened or the
+  // mode switches, so a stale account from a previous attempt is never reused.
+  const [googleAccount, setGoogleAccount] = useState(null);
+  const [pendingApproval, setPendingApproval] = useState(null); // { roleLabel, schoolName } | null
 
   // School-admin second factor: a confirmation code emailed after email + school code
   // are accepted. `pendingAdminAuth` holds the address the code was sent to so the OTP
@@ -465,27 +690,27 @@ export default function EasyClassWork() {
   const [otpVerifying, setOtpVerifying] = useState(false);
   const [otpError, setOtpError] = useState('');
 
-  // Any overlay (the connecting popup, the sign-in/register modal, or the admin
-  // confirmation-code modal) blurs the page behind it.
-  const isOverlayActive = isRegisterLoading || Boolean(authView) || otpModalOpen;
+  // Any overlay (the connecting popup, the sign-in/register modal, the pending-approval
+  // notice, or the admin confirmation-code modal) blurs the page behind it.
+  const isOverlayActive = isRegisterLoading || Boolean(authView) || otpModalOpen || Boolean(pendingApproval);
 
   // Cycle through the connection-style messages while loading is active
-useEffect(() => {
-  if (!isRegisterLoading) {
-    setLoadingStep(0);
-    return;
-  }
-  const interval = setInterval(() => {
-    setLoadingStep((prev) => {
-      if (prev + 1 >= LOADING_STEPS.length) {
-        clearInterval(interval);
-        return prev;
-      }
-      return prev + 1;
-    });
-  }, 420);
-  return () => clearInterval(interval);
-}, [isRegisterLoading]);
+  useEffect(() => {
+    if (!isRegisterLoading) {
+      setLoadingStep(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setLoadingStep((prev) => {
+        if (prev + 1 >= LOADING_STEPS.length) {
+          clearInterval(interval);
+          return prev;
+        }
+        return prev + 1;
+      });
+    }, 420);
+    return () => clearInterval(interval);
+  }, [isRegisterLoading]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -495,8 +720,8 @@ useEffect(() => {
   }, []);
 
   // `state` (optional) is handed straight to react-router's navigate so a
-  // destination page — like Admin.jsx — can read it via useLocation().state
-  // without waiting on a network round trip.
+  // destination page — like School_Admin.jsx or SuperAdmin.jsx — can read it
+  // via useLocation().state without waiting on a network round trip.
   const handleNavigate = (path, state) => {
     // show loading popup for a short time, then navigate
     setIsRegisterLoading(true);
@@ -509,7 +734,8 @@ useEffect(() => {
   const openAuth = (role, mode) => {
     setFormError('');
     setAuthSubmitting(false);
-    setLoginForm({ email: '', password: '', schoolCode: '' });
+    setGoogleAccount(null);
+    setLoginForm({ email: '', schoolCode: '' });
     setRegisterForm({ fullName: '', email: '', school: '', schoolCode: '', password: '', confirmPassword: '' });
     setAuthView({ role, mode });
   };
@@ -517,11 +743,27 @@ useEffect(() => {
   const closeAuth = () => {
     setAuthView(null);
     setFormError('');
+    setGoogleAccount(null);
   };
 
   const switchAuthMode = (mode) => {
     setFormError('');
+    setGoogleAccount(null);
     setAuthView((prev) => (prev ? { ...prev, mode } : prev));
+  };
+
+  // Fired once GoogleAuthButton resolves. Prefills the full name from the Google
+  // account (still editable) so the person isn't retyping something Google already
+  // told us. This does NOT hit the backend by itself — submitting the form does,
+  // once the rest of the fields (school + school code) are filled in.
+  const handleGoogleSignedIn = (account) => {
+    setFormError('');
+    setGoogleAccount(account);
+    setRegisterForm((f) => ({ ...f, fullName: f.fullName || account.name, email: account.email }));
+  };
+
+  const handleGoogleSwitch = () => {
+    setGoogleAccount(null);
   };
 
   const closeOtpModal = () => {
@@ -537,6 +779,74 @@ useEffect(() => {
     const role = authView?.role;
     const config = ROLE_CONFIG[role] || ROLE_CONFIG.student;
 
+    if (config.authField === 'google') {
+      if (!googleAccount) {
+        setFormError('Continue with Google first.');
+        return;
+      }
+
+      // ------------------------------------------------------------
+      // SUPER ADMIN: gated entirely by AUTHORIZED_SUPERADMIN_EMAIL. No
+      // password is ever shown or typed. Once the Google email matches,
+      // we transparently obtain a real backend session token so the
+      // dashboard's /api/superadmin/* calls keep working.
+      // ------------------------------------------------------------
+      if (role === 'superAdmin') {
+        setAuthSubmitting(true);
+        try {
+          if (googleAccount.email.toLowerCase() !== AUTHORIZED_SUPERADMIN_EMAIL.toLowerCase()) {
+            setFormError('This Google account is not authorized for super admin access.');
+            return;
+          }
+          const response = await fetch(`${API_BASE}/api/auth/super-admin/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: BACKEND_SUPERADMIN_EMAIL, password: BACKEND_SUPERADMIN_PASSWORD }),
+          });
+          const result = await response.json();
+          if (response.ok && result.success) {
+            localStorage.setItem(SUPERADMIN_SESSION_KEY, JSON.stringify({ token: result.token, email: googleAccount.email }));
+            setAuthView(null);
+            handleNavigate('/dashboard/superAdmin', { token: result.token, email: googleAccount.email });
+          } else {
+            setFormError('Your Google account is authorized, but the server rejected the sign-in. Please contact the platform owner.');
+          }
+        } catch (err) {
+          console.error(err);
+          setFormError('Could not reach the server. Please check your connection and try again.');
+        } finally {
+          setAuthSubmitting(false);
+        }
+        return;
+      }
+
+      // POST /api/users/login-google matches by google_sub + role, and only
+      // succeeds if the account exists AND has been approved by the school
+      // admin. Anything else comes back as an error we show inline.
+      setAuthSubmitting(true);
+      try {
+        const response = await fetch(`${API_BASE}/api/users/login-google`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role, email: googleAccount.email, googleSub: googleAccount.googleSub }),
+        });
+        const result = await response.json();
+        if (response.ok && result.success) {
+          localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ token: result.token, user: result.user }));
+          setAuthView(null);
+          handleNavigate(`/dashboard/${role}`, { token: result.token, email: googleAccount.email, name: googleAccount.name });
+        } else {
+          setFormError(result.message || 'Could not sign you in.');
+        }
+      } catch (err) {
+        console.error(err);
+        setFormError('Could not reach the server. Please check your connection and try again.');
+      } finally {
+        setAuthSubmitting(false);
+      }
+      return;
+    }
+
     if (config.authField === 'schoolCode') {
       if (!loginForm.email || !loginForm.schoolCode) {
         setFormError('Please enter your email and school code.');
@@ -544,9 +854,11 @@ useEffect(() => {
       }
 
       // School admins never get signed in directly here — the email + code only
-      // earns them a confirmation code sent to that email address. Only entering
-      // that exact code (verified against the backend, below) actually signs them in,
-      // so a wrong or made-up email/code pair can never reach the dashboard.
+      // earns them a confirmation code sent to that email address, AND ONLY IF
+      // the school has already been approved by a super admin (home.js checks
+      // schools.status before it will even generate a code). Only entering
+      // that exact code (verified against the backend, below) actually signs
+      // them in, so a wrong/made-up/unapproved school can never reach the dashboard.
       setAuthSubmitting(true);
       try {
         const response = await fetch(`${API_BASE}/api/auth/school-admin/request-code`, {
@@ -572,15 +884,6 @@ useEffect(() => {
       }
       return;
     }
-
-    if (!loginForm.email || !loginForm.password) {
-      setFormError('Please enter your email and password.');
-      return;
-    }
-
-    setAuthView(null);
-    // Reuses the same "connecting" loading popup used elsewhere, then goes to the right dashboard.
-    handleNavigate(`/dashboard/${role}`);
   };
 
   const handleVerifyAdminOtp = async (e) => {
@@ -598,8 +901,8 @@ useEffect(() => {
 
       // Same principle as registration: only a genuine positive response from the
       // backend — which only happens if the code we emailed was typed back correctly —
-      // is allowed to open the dashboard. On success `home.js` also hands back a
-      // session token and the school's details, which we hand off to Admin.jsx.
+      // is allowed to open the dashboard. On success home.js also hands back a
+      // session token and the school's details, which we hand off to School_Admin.jsx.
       if (response.ok && result.success) {
         localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ token: result.token, school: result.school }));
         setOtpModalOpen(false);
@@ -638,8 +941,56 @@ useEffect(() => {
     }
   };
 
-  const handleRegisterSubmit = (e) => {
+  const handleRegisterSubmit = async (e) => {
     e.preventDefault();
+    setFormError('');
+    const role = authView?.role;
+    const config = ROLE_CONFIG[role] || ROLE_CONFIG.student;
+
+    if (config.authField === 'google') {
+      if (!googleAccount) {
+        setFormError('Continue with Google first.');
+        return;
+      }
+      const { fullName, school, schoolCode } = registerForm;
+      if (!fullName || !school || !schoolCode) {
+        setFormError('Please fill in every field.');
+        return;
+      }
+      // POST /api/users/register-google creates a `users` row with
+      // status = 'pending_approval'. The school admin then approves it from
+      // their dashboard (School_Admin.jsx) before this person can sign in.
+      setAuthSubmitting(true);
+      try {
+        const response = await fetch(`${API_BASE}/api/users/register-google`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            role,
+            fullName,
+            email: googleAccount.email,
+            googleSub: googleAccount.googleSub,
+            schoolId: school,
+            schoolCode,
+          }),
+        });
+        const result = await response.json();
+        if (response.ok && result.success) {
+          const schoolName = schools.find((s) => s.id === school)?.name;
+          setAuthView(null);
+          setPendingApproval({ roleLabel: ROLE_CONFIG[role].label, schoolName });
+        } else {
+          setFormError(result.message || 'Could not submit your registration.');
+        }
+      } catch (err) {
+        console.error(err);
+        setFormError('Could not reach the server. Please check your connection and try again.');
+      } finally {
+        setAuthSubmitting(false);
+      }
+      return;
+    }
+
     const { fullName, email, school, schoolCode, password, confirmPassword } = registerForm;
     if (!fullName || !email || !school || !schoolCode || !password || !confirmPassword) {
       setFormError('Please fill in every field.');
@@ -653,7 +1004,6 @@ useEffect(() => {
       setFormError("Passwords don't match.");
       return;
     }
-    const role = authView?.role;
     setAuthView(null);
     handleNavigate(`/dashboard/${role}`);
   };
@@ -708,6 +1058,20 @@ useEffect(() => {
           authSubmitting={authSubmitting}
           onSubmitRegister={handleRegisterSubmit}
           onSubmitLogin={handleLoginSubmit}
+          googleAccount={googleAccount}
+          onGoogleSignedIn={handleGoogleSignedIn}
+          onGoogleSwitch={handleGoogleSwitch}
+          schools={schools}
+          schoolsLoading={schoolsLoading}
+        />
+      )}
+
+      {/* Pending-approval notice shown right after a student/teacher submits registration. */}
+      {pendingApproval && (
+        <PendingApprovalModal
+          roleLabel={pendingApproval.roleLabel}
+          schoolName={pendingApproval.schoolName}
+          onClose={() => setPendingApproval(null)}
         />
       )}
 
@@ -780,8 +1144,6 @@ useEffect(() => {
 
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* Any overlay (loading or auth) blurs the page behind it, and the blur is centered
-           on the viewport so it never shifts the fixed popup that sits above it. */
         .ecw-blur-active { filter: blur(6px) saturate(0.9) brightness(0.9); transform-origin:center; }
         .ecw-magic-overlay {
           position: fixed;
@@ -812,7 +1174,6 @@ useEffect(() => {
         .ecw-spin-ring { animation: ecw-spin-ring-rotate 1s linear infinite; transform-origin: 32px 32px; }
         @keyframes ecw-spin-ring-rotate { to { transform: rotate(360deg); } }
 
-        /* thin progress bar that fills as the connection steps advance */
         .ecw-progress-track {
           width: 100%;
           height: 5px;
@@ -828,8 +1189,6 @@ useEffect(() => {
           transition: width 0.4s ease;
         }
 
-        /* Ad panel: sized down progressively as the viewport shrinks, instead of
-           growing on mobile like it used to. Desktop stays the largest size. */
         .ecw-ad-panel {
           position: absolute;
           top: -10%;
@@ -1015,7 +1374,6 @@ useEffect(() => {
               )}
             </button>
 
-            {/* CSS-only mobile menu toggle */}
             <input type="checkbox" id="nav-toggle" className="peer hidden" />
             <label htmlFor="nav-toggle" className="lg:hidden flex flex-col justify-center items-center gap-1.5 w-9 h-9 rounded-lg border border-neutral-200 cursor-pointer">
               <span className="block w-4 h-0.5 bg-neutral-700"></span>
@@ -1085,7 +1443,7 @@ useEffect(() => {
         </div>
       </header>
 
-      {/* HERO - animated illustration: a school, a bridge, and students walking across it */}
+      {/* HERO */}
       <section id="home" className="bg-white">
         <div className="max-w-6xl mx-auto px-5 sm:px-8 pt-12 pb-14 flex flex-col lg:flex-row items-center gap-10">
           <div className="flex flex-col items-start text-left w-full lg:w-1/2">
@@ -1123,7 +1481,6 @@ useEffect(() => {
             </div>
           </div>
 
-          {/* Signature illustration: kids crossing the academic bridge */}
           <div className="w-full lg:w-1/2">
             <div className="relative bg-gradient-to-b from-[rgb(11,22,111)] to-[#EAF6EF] rounded-2xl p-6 overflow-hidden">
               <span className="absolute top-5 right-8 text-[#6EE7A8] animate-[ecw-float_6s_ease-in-out_infinite]">
@@ -1133,8 +1490,6 @@ useEffect(() => {
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 15c3-4 6 4 9 0s6 4 7-1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
               </span>
 
-              {/* Featured partner ad circle — visible on every screen size now,
-                  it just scales itself down as the viewport shrinks (see .ecw-ad-panel CSS). */}
               <div className="ecw-ad-panel relative">
                 <div className="ecw-ad-circles">
                   <div className="ecw-ad-circle">
@@ -1149,7 +1504,6 @@ useEffect(() => {
               </div>
 
               <svg viewBox="0 0 480 220" className="w-full h-auto">
-                {/* school building on the left, with the Rwanda flag */}
                 <g>
                   <rect x="18" y="120" width="70" height="55" rx="3" fill="#DBEAFE" />
                   <polygon points="15,120 53,95 91,120" fill="rgb(22,32,111)" />
@@ -1167,18 +1521,15 @@ useEffect(() => {
                   </g>
                 </g>
 
-                {/* bridge */}
                 <path d="M95 175 Q 240 110 385 175" stroke="#178754" strokeWidth="6" fill="none" strokeLinecap="round" />
                 <path d="M95 175 Q 240 130 385 175" stroke="#A7F3D0" strokeWidth="14" fill="none" strokeLinecap="round" opacity="0.6" />
 
-                {/* laptop / digital learning on the right */}
                 <g>
                   <rect x="392" y="140" width="66" height="42" rx="4" fill="#178754" />
                   <rect x="398" y="146" width="54" height="30" rx="2" fill="#ECFDF5" />
                   <rect x="386" y="182" width="78" height="7" rx="2" fill="#0F6B41" />
                 </g>
 
-                {/* students, walking from the school to the laptop */}
                 <g className="ecw-walker">
                   <circle cx="0" cy="150" r="7" fill="rgb(22,32,111)" />
                   <rect x="-4" y="157" width="8" height="14" rx="3" fill="rgb(22,32,111)" />
@@ -1200,7 +1551,7 @@ useEffect(() => {
         </div>
       </section>
 
-      {/* OUR SERVICES - flex layout instead of grid */}
+      {/* OUR SERVICES */}
       <section id="services" className="bg-white py-14">
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
           <div className="max-w-xl mb-10">
@@ -1263,7 +1614,7 @@ useEffect(() => {
           <div className="max-w-xl mb-10">
             <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">How to get started</span>
             <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
-              Five steps, and your school is online
+              Six steps, and your school is online
             </h2>
           </div>
 
@@ -1272,14 +1623,14 @@ useEffect(() => {
 
             <div className="flex flex-col gap-6">
               {[
-                {i:1, title:'Register your school', text:'Submit your school details and pay the term fee by MTN, Airtel or bank.'},
-                {i:2, title:'Get your school code', text:'Your school receives a unique code used to set up every other activity.'},
-                {i:3, title:'Add staff and students', text:'Use your school code to add teachers and students, each getting a personal login code.'},
-                {i:4, title:'Publish notes and quizzes', text:'Teachers start uploading materials the same day.'},
-                {i:5, title:'Track progress', text:'Watch attendance, grades and quiz results as the term goes on.'},
+                {i:1, title:'Register your school', text:'Verify your email with Google, submit your school details, and pay the term fee by MTN, Airtel or bank.'},
+                {i:2, title:'Wait for approval', text:'Our team confirms your school is real before its admin account is switched on.'},
+                {i:3, title:'Get your school code', text:'Once approved, your school can sign in as admin and share its code with staff and students.'},
+                {i:4, title:'Add staff and students', text:'Teachers and students sign up with Google using your school code, and the admin approves each one.'},
+                {i:5, title:'Publish notes and quizzes', text:'Teachers start uploading materials the same day.'},
+                {i:6, title:'Track progress', text:'Watch attendance, grades and quiz results as the term goes on.'},
               ].map(step => (
                 <div key={step.i} className="relative flex flex-col sm:block sm:pl-14">
-                  {/* mobile: marker inline above content */}
                   <div className="flex items-center gap-3 sm:hidden">
                     <div className="w-9 h-9 rounded-full bg-white border-2 border-[#178754] flex items-center justify-center text-sm font-bold text-[rgb(22,32,111)] shadow">{step.i}</div>
                     <div>
@@ -1288,7 +1639,6 @@ useEffect(() => {
                     </div>
                   </div>
 
-                  {/* desktop / sm+: timeline style with absolute marker */}
                   <div className="hidden sm:block absolute left-0 sm:left-6 top-0">
                     <div className="w-10 h-10 rounded-full bg-white border-2 border-[#178754] flex items-center justify-center text-sm font-bold text-[rgb(22,32,111)] shadow">{step.i}</div>
                   </div>
@@ -1310,7 +1660,8 @@ useEffect(() => {
             <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Register</span>
             <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">Choose your dashboard</h2>
             <p className="ecw-body text-xs text-neutral-600 mt-2">
-              Every account signs in with in the system and are given codes
+              Students and teachers verify their email and sign in with Google. School admins sign in with their
+              school email and code — once their school has been approved.
             </p>
           </div>
 
@@ -1320,7 +1671,7 @@ useEffect(() => {
                 <ROLE_CONFIG.student.icon className="w-5 h-5 text-[#178754]" aria-hidden="true" />
               </span>
               <h3 className="ecw-heading font-bold text-sm text-neutral-900 mb-1">Student dashboard</h3>
-              <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">Read class notes, take quizzes and check your report card using your student code.</p>
+              <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">Read class notes, take quizzes and check your report card, signed in with Google.</p>
               <button
                 type="button"
                 onClick={() => openAuth('student', 'login')}
@@ -1334,7 +1685,7 @@ useEffect(() => {
                 <ROLE_CONFIG.teacher.icon className="w-5 h-5 text-[#1D6FE0]" aria-hidden="true" />
               </span>
               <h3 className="ecw-heading font-bold text-sm text-neutral-900 mb-1">Teacher dashboard</h3>
-              <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">Upload lesson materials, grade work and record attendance using your teacher code.</p>
+              <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">Upload lesson materials, grade work and record attendance, signed in with Google.</p>
               <button
                 type="button"
                 onClick={() => openAuth('teacher', 'login')}
@@ -1362,7 +1713,7 @@ useEffect(() => {
                 <ROLE_CONFIG.superAdmin.icon className="w-5 h-5 text-[#1D6FE0]" aria-hidden="true" />
               </span>
               <h3 className="ecw-heading font-bold text-sm text-neutral-900 mb-1">Super admin</h3>
-              <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">Oversee every school on the platform, approve registrations and manage the system itself.</p>
+              <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">Review and approve new schools, and oversee every school on the platform — sign in with the authorized Google account.</p>
               <button
                 type="button"
                 onClick={() => openAuth('superAdmin', 'login')}
@@ -1378,7 +1729,7 @@ useEffect(() => {
               <div>
                 <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">School registration</span>
                 <p className="ecw-heading text-xl font-extrabold text-neutral-900 mt-1">150,000 RWF <span className="ecw-body text-xs font-medium text-neutral-500">/ term</span></p>
-                <p className="ecw-body text-xs text-neutral-600 mt-1">Includes notes, quiz, report cards and a school code to add your staff and students.</p>
+                <p className="ecw-body text-xs text-neutral-600 mt-1">Includes notes, quiz, report cards and a school code to add your staff and students, once approved.</p>
               </div>
               <button
                 type="button"
@@ -1482,7 +1833,7 @@ useEffect(() => {
         </div>
       </section>
 
-      {/* OUR TEAM - nicer centered profiles */}
+      {/* OUR TEAM */}
       <section id="team" className="py-14 bg-white">
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
           <div className="max-w-xl mb-10">

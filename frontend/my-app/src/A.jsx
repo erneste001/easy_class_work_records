@@ -17,12 +17,17 @@ import {
   Smartphone,
   Wallet,
   ClipboardCheck,
-  BadgeCheck,
   Languages,
+  Clock3,
 } from "lucide-react";
 
 // The only image asset used anywhere in this form — the brand mark.
 import logos from "./assets/logo.jpg";
+
+// Same Google button used on the home page for teacher/student sign-in.
+// Expected interface: <GoogleAuthButton onSignedIn={(account) => {}} label="..." />
+// where account = { name, email, googleSub }.
+import GoogleAuthButton from "./GoogleAuthButton.jsx";
 
 /* ============================================================================
    CONFIG
@@ -46,7 +51,6 @@ const DISTRICTS_BY_PROVINCE = {
 
 const LEVEL_KEYS = ["nursery", "primary", "secondary", "university"];
 
-// Payment brands are represented with icon + color tokens only — no logo images.
 const PAYMENT_METHODS = [
   { key: "mtn", label: "MTN Mobile Money", icon: Smartphone, tint: "#FFCB05", ink: "#7A5E00" },
   { key: "airtel", label: "Airtel Money", icon: Smartphone, tint: "#ED1C24", ink: "#8C1015" },
@@ -61,7 +65,7 @@ const INITIAL_FORM = {
   cell: "",
   village: "",
   schoolName: "",
-  schoolEmail: "",
+  schoolEmail: "", // filled automatically once Google verifies it — never typed
   phone: "",
   levels: [],
   ownership: "",
@@ -85,10 +89,6 @@ function buildDistrictTree(district) {
   return tree;
 }
 
-const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
-// Rwandan mobile numbers: 10 digits total, starting with 07 (MTN/Airtel/Tigo ranges).
-// Accepts an optional +250 prefix and strips spaces/dashes before validating.
 function normalizeRwandaPhone(raw) {
   let v = (raw || "").replace(/[\s-]/g, "");
   if (v.startsWith("+250")) v = "0" + v.slice(4);
@@ -107,16 +107,13 @@ const T_EN = {
   langSwitch: "Kinyarwanda",
   locationVerified: "Location verified — Rwanda",
   asideEyebrow: "GETTING STARTED",
-  asideTitle: "One record system, every institution.",
-  asideDesc:
-    "Easy Class Records connects schools and exam centers across Rwanda so results, enrollment, and payments live in one place.",
   step1: ["Confirm your location", "We verify you're registering from within Rwanda."],
   step2: ["Add institution details", "Name, contact, levels offered, ownership."],
-  step3: ["Verify your email", "We send a code to your institution email to confirm it's really yours."],
+  step3: ["Verify with Google", "Sign in with Google so we know the email is really yours."],
   step4: ["Choose how you'll pay", "Airtel Money, MTN Mobile Money, or PayPal."],
   step1Short: "Location",
   step2Short: "Institution",
-  step3Short: "Email",
+  step3Short: "Google",
   step4Short: "Payment",
   formEyebrow: "INSTITUTION REGISTRATION",
   formTitle: "Register your institution",
@@ -132,7 +129,6 @@ const T_EN = {
   village: "Village",
   institutionSection: "Institution details",
   namePh: "Institution name",
-  emailPh: "Institution email",
   phonePh: "07XX XXX XXX",
   phoneInvalid: "Enter a valid Rwandan number — 10 digits, starting with 07",
   phoneValid: "Valid Rwandan number",
@@ -151,43 +147,30 @@ const T_EN = {
   both: "Both",
   chooseResidence: "Residence type",
 
-  emailChecking: "Checking that this domain can receive mail…",
-  emailValidDomain: "Domain looks valid — we'll still confirm by email code",
-  emailInvalidDomain: "This domain doesn't appear to accept email — check for typos",
-  emailCheckFailed: "Couldn't verify this domain right now",
-
-  verifySection: "Email verification",
+  verifySection: "Verify your email",
   verifyHint:
-    "Fill in the institution details above first. We'll email a one-time code to this address — only entering that exact code marks your email as verified.",
-  sendCode: "Send verification code",
-  sendingCode: "Sending code…",
-  resendCode: "Resend code",
-  verifiedBadge: "Email verified",
-  emailChangedNotice: "You changed the email address — please verify it again.",
-  verifyModalTitle: "Verify your email",
-  verifyModalDesc: "We sent a 6-digit code to",
-  otpLabel: "Verification code",
-  otpPlaceholder: "6-digit code",
-  verifyBtn: "Verify",
-  verifying: "Verifying…",
-  verifyFailed: "Verification failed. Please try again.",
-  codeExpired: "Code expired or invalid. Please request a new one.",
+    "Fill in the institution details above first, then continue with Google. Whichever email you sign in with becomes your institution's verified email — nothing to type or copy.",
+  continueWithGoogle: "Continue with Google",
+  registering: "Verifying and registering…",
+  verifiedBadge: "Verified with Google",
+  switchAccount: "Switch",
 
   payment: "Payment method",
-  paymentHint: "Verify your email first, then choose a payment method to pay the registration fee.",
-  paymentLockedHint: "Verify your email above to unlock payment.",
+  paymentHint: "Verify with Google first, then choose a payment method to pay the registration fee.",
+  paymentLockedHint: "Verify with Google above to unlock payment.",
   paid: "Paid",
   submit: "Submit registration",
-  submitting: "Submitting…",
   already: "Already registered?",
   successTitle: "Registration submitted",
   successUnder: "has been registered under",
   successSentTo: "A confirmation will be sent to",
   yourSchoolCode: "Your school code",
   keepCodeSafe: "Keep this code safe — you'll need it to log in.",
+  pendingVerification:
+    "One last step: our team reviews and approves every new school before its admin can sign in. You'll get an email as soon as that's done — usually within one business day.",
   registerAnother: "Register another institution",
-  validationError: "Please complete every field above, verify your email, then pay the registration fee.",
-  fillFirstError: "Please fill in the institution and location details before verifying your email.",
+  validationError: "Please complete every field above, verify with Google, then pay the registration fee.",
+  fillFirstError: "Please fill in the institution and location details before continuing with Google.",
   serverError: "Registration failed. Please try again.",
   networkError: "Could not reach the server. Please check your connection and try again.",
   modalTitle: "Registration fee",
@@ -225,16 +208,13 @@ const T_RW = {
   langSwitch: "English",
   locationVerified: "Aho uri byemejwe — u Rwanda",
   asideEyebrow: "TANGIRA HANO",
-  asideTitle: "Sisitemu imwe y'inyandiko, kuri buri kigo.",
-  asideDesc:
-    "Easy Class Records ihuza amashuri n'ibigo by'ibizamini mu Rwanda hose kugira ngo ibisubizo, kwiyandikisha, n'kwishyura bibike ahantu hamwe.",
   step1: ["Emeza aho uri", "Turareba niba wiyandikisha uri mu Rwanda."],
   step2: ["Shyiramo amakuru y'ikigo", "Izina, aho bavugana, amashuri atangwa, nyir'ikigo."],
-  step3: ["Emeza email yawe", "Turohereza kode kuri email y'ikigo kugira ngo twemeze ko ari iyawe."],
+  step3: ["Emeza ukoresheje Google", "Injira na Google kugira ngo tumenye ko email ari iyawe."],
   step4: ["Hitamo uburyo uzishyura", "Airtel Money, MTN Mobile Money, cyangwa PayPal."],
   step1Short: "Aho uri",
   step2Short: "Ikigo",
-  step3Short: "Email",
+  step3Short: "Google",
   step4Short: "Kwishyura",
   formEyebrow: "KWIYANDIKISHA KW'IKIGO",
   formTitle: "Andikisha ikigo cyawe",
@@ -250,7 +230,6 @@ const T_RW = {
   village: "Umudugudu",
   institutionSection: "Amakuru y'ikigo",
   namePh: "Izina ry'ikigo",
-  emailPh: "Email y'ikigo",
   phonePh: "07XX XXX XXX",
   phoneInvalid: "Andika nimero nyayo yo mu Rwanda — imibare 10, itangira na 07",
   phoneValid: "Nimero nyayo yo mu Rwanda",
@@ -269,43 +248,30 @@ const T_RW = {
   both: "Byombi",
   chooseResidence: "Ubwoko bw'ubwicaro",
 
-  emailChecking: "Turi kureba niba iyi domain ishobora kwakira imeyili…",
-  emailValidDomain: "Domain isa n'inziza — tuzabikemeza na none binyuze kuri kode",
-  emailInvalidDomain: "Iyi domain isa n'itakira imeyili — reba niba wanditse neza",
-  emailCheckFailed: "Ntibyashobotse kwemeza iyi domain ubu",
-
-  verifySection: "Kwemeza email",
+  verifySection: "Emeza email yawe",
   verifyHint:
-    "Banza wuzuze amakuru y'ikigo hejuru. Tuzohereza kode kuri iyi email — ari uko wanditse neza kode nyayo, email yawe izemezwa.",
-  sendCode: "Ohereza kode yo kwemeza",
-  sendingCode: "Kohereza kode…",
-  resendCode: "Ongera wohereze kode",
-  verifiedBadge: "Email yemejwe",
-  emailChangedNotice: "Wahinduye aderesi ya email — ongera uyemeze.",
-  verifyModalTitle: "Emeza email yawe",
-  verifyModalDesc: "Twohereje kode y'imibare 6 kuri",
-  otpLabel: "Kode yo kwemeza",
-  otpPlaceholder: "Kode y'imibare 6",
-  verifyBtn: "Emeza",
-  verifying: "Kwemeza…",
-  verifyFailed: "Kwemeza byanze. Ongera ugerageze.",
-  codeExpired: "Kode yarangiye igihe cyangwa si yo. Saba indi.",
+    "Banza wuzuze amakuru y'ikigo hejuru, hanyuma winjire na Google. Email uzinjiramo niyo izaba ari email y'ikigo cyawe yemejwe — nta kindi wandika.",
+  continueWithGoogle: "Komeza na Google",
+  registering: "Kwemeza no kwiyandikisha…",
+  verifiedBadge: "Byemejwe na Google",
+  switchAccount: "Hindura",
 
   payment: "Uburyo bwo kwishyura",
-  paymentHint: "Banza wemeze email yawe, hanyuma uhitemo uburyo bwo kwishyura amafaranga y'iyandikisha.",
-  paymentLockedHint: "Emeza email yawe hejuru kugira ngo ushobore kwishyura.",
+  paymentHint: "Banza wemeze na Google, hanyuma uhitemo uburyo bwo kwishyura amafaranga y'iyandikisha.",
+  paymentLockedHint: "Emeza na Google hejuru kugira ngo ushobore kwishyura.",
   paid: "Byishyuwe",
   submit: "Ohereza iyandikisha",
-  submitting: "Kohereza…",
   already: "Wamaze kwiyandikisha?",
   successTitle: "Iyandikisha ryoherejwe",
   successUnder: "yandikishijwe munsi ya",
   successSentTo: "Iyemeza rizoherezwa kuri",
   yourSchoolCode: "Kode y'ishuri ryawe",
   keepCodeSafe: "Bika neza iyi kode — uzayikenera kugira ngo winjire.",
+  pendingVerification:
+    "Intambwe iheruka: itsinda ryacu risuzuma kandi ryemeza buri shuri rishya mbere y'uko umuyobozi waryo yinjira. Uzabona email igihe byemejwe — akenshi mu munsi umwe w'akazi.",
   registerAnother: "Andikisha ikindi kigo",
-  validationError: "Uzuza buri gice hejuru, wemeze email yawe, hanyuma wishyure amafaranga y'iyandikisha.",
-  fillFirstError: "Uzuza amakuru y'ikigo n'aho uri mbere yo kwemeza email yawe.",
+  validationError: "Uzuza buri gice hejuru, wemeze na Google, hanyuma wishyure amafaranga y'iyandikisha.",
+  fillFirstError: "Uzuza amakuru y'ikigo n'aho uri mbere yo gukomeza na Google.",
   serverError: "Iyandikisha ryanze. Ongera ugerageze.",
   networkError: "Ntibyashobotse guhuza na seriveri. Reba interineti yawe hanyuma ugerageze.",
   modalTitle: "Amafaranga y'iyandikisha",
@@ -337,13 +303,14 @@ const TextCtx = createContext(T_EN);
 const useT = () => useContext(TextCtx);
 
 /* ============================================================================
-   DESIGN TOKENS (kept consistent across every sub-component)
+   DESIGN TOKENS — green / blue / orangered, used consistently everywhere.
    ============================================================================ */
 
-const INK = "rgb(11,22,111)";
+const INK = "rgb(11,22,111)";     // blue — headings, secondary buttons
 const INK_DARK = "rgb(7,14,74)";
-const EMERALD = "#1E9E5A";
-const AMBER = "#C97C0E";
+const EMERALD = "#1E9E5A";        // green — success / primary action
+const ORANGE = "#FF4500";         // orangered — pending / attention
+const ORANGE_BG = "#FFF1EC";
 const PAPER = "#FFFFFF";
 const LINE = "#E4E7F2";
 
@@ -393,16 +360,11 @@ export default function RegistrationForm({ onBackHome, onLogin }) {
   );
 }
 
-// A few small, purposeful keyframes shared by the progress rail and blobs.
 function GlobalKeyframes() {
   return (
     <style>{`
       @keyframes stepIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-      @keyframes drift { 0%, 100% { transform: translate(0,0) scale(1); } 50% { transform: translate(10px,-14px) scale(1.05); } }
       @keyframes popIn { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
-      @keyframes floatY { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-6px); } }
-      @keyframes typeBlink { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
-      @keyframes sunSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       @keyframes rise { from { opacity: 0; transform: translateY(4px) scale(0.9); } to { opacity: 1; transform: translateY(0) scale(1); } }
       @media (prefers-reduced-motion: reduce) {
         * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
@@ -412,22 +374,14 @@ function GlobalKeyframes() {
 }
 
 /* ============================================================================
-   RWANDA FLAG (inline SVG — no external image needed)
+   RWANDA FLAG (inline SVG)
    ============================================================================ */
 
-function RwandaFlag({ size = 20, rounded = true, ring = false }) {
+function RwandaFlag({ size = 20, rounded = true }) {
   const w = size;
   const h = Math.round(size * 0.7);
   return (
-    <svg
-      width={w}
-      height={h}
-      viewBox="0 0 30 21"
-      className={rounded ? "rounded-[2px]" : ""}
-      style={ring ? { boxShadow: "0 0 0 1px rgba(255,255,255,0.4)" } : undefined}
-      aria-label="Rwanda flag"
-      role="img"
-    >
+    <svg width={w} height={h} viewBox="0 0 30 21" className={rounded ? "rounded-[2px]" : ""} aria-label="Rwanda flag" role="img">
       <rect x="0" y="0" width="30" height="21" fill="#20603D" />
       <rect x="0" y="0" width="30" height="15.75" fill="#00A1DE" />
       <rect x="0" y="13.5" width="30" height="2.25" fill="#FAD201" />
@@ -436,68 +390,6 @@ function RwandaFlag({ size = 20, rounded = true, ring = false }) {
         {Array.from({ length: 24 }).map((_, i) => (
           <rect key={i} x="-0.18" y="-4.6" width="0.36" height="1.9" fill="#E5BE01" transform={`rotate(${i * 15})`} />
         ))}
-      </g>
-    </svg>
-  );
-}
-
-/* ============================================================================
-   STUDENT-ON-A-LAPTOP ILLUSTRATION (inline SVG, animated, no external images)
-   ============================================================================ */
-
-function StudentIllustration() {
-  return (
-    <svg viewBox="0 0 260 170" className="w-full h-auto" role="img" aria-label="Student profile on a laptop">
-      {/* soft ground shadow */}
-      <ellipse cx="130" cy="156" rx="86" ry="8" fill="rgba(0,0,0,0.18)" />
-
-      {/* laptop base */}
-      <g style={{ animation: "floatY 5s ease-in-out infinite" }}>
-        <rect x="52" y="118" width="156" height="10" rx="4" fill="rgba(11,22,111,0.10)" />
-        <path d="M64 118 L72 74 H188 L196 118 Z" fill="rgba(11,22,111,0.05)" stroke="rgba(11,22,111,0.25)" strokeWidth="1.5" />
-
-        {/* laptop screen */}
-        <rect x="78" y="30" width="104" height="70" rx="6" fill="rgb(7,14,74)" stroke="rgba(255,255,255,0.4)" strokeWidth="1.5" />
-        <rect x="84" y="36" width="92" height="58" rx="3" fill="#0E1B86" />
-
-        {/* screen content: a little profile card */}
-        <circle cx="106" cy="56" r="9" fill="#F6F7FB" />
-        <path d="M94 78c2-8 8-12 12-12s10 4 12 12" fill="#F6F7FB" opacity="0.9" />
-        <rect x="126" y="49" width="40" height="4" rx="2" fill="#1E9E5A" />
-        <rect x="126" y="58" width="34" height="3.2" rx="1.6" fill="rgba(255,255,255,0.55)" />
-        <rect x="126" y="65" width="28" height="3.2" rx="1.6" fill="rgba(255,255,255,0.35)" />
-        <rect x="94" y="82" width="72" height="7" rx="3.5" fill="#1E9E5A" opacity="0.9">
-          <animate attributeName="opacity" values="0.6;1;0.6" dur="2.4s" repeatCount="indefinite" />
-        </rect>
-
-        {/* blinking cursor to suggest "typing / verifying" */}
-        <rect x="150" y="83.5" width="2" height="4" fill="#F6F7FB" style={{ animation: "typeBlink 1.1s steps(1) infinite" }} />
-      </g>
-
-      {/* seated student silhouette */}
-      <g style={{ animation: "floatY 5s ease-in-out infinite 0.3s" }}>
-        <circle cx="130" cy="112" r="11" fill="#E5BE01" />
-        <path d="M110 150c1-16 9-27 20-27s19 11 20 27z" fill="#E5BE01" />
-      </g>
-
-      {/* graduation cap, floating above */}
-      <g style={{ animation: "floatY 4.2s ease-in-out infinite 0.6s" }}>
-        <path d="M130 14 L166 26 L130 38 L94 26 Z" fill="#C97C0E" />
-        <path d="M130 38 L130 50" stroke="#C97C0E" strokeWidth="2" />
-        <circle cx="130" cy="52" r="3" fill="#C97C0E" />
-        <path d="M110 30 v10c0 5 9 9 20 9s20-4 20-9V30" fill="none" stroke="#C97C0E" strokeWidth="2" opacity="0.55" />
-      </g>
-
-      {/* small floating "verified" badge */}
-      <g style={{ animation: "rise 2.6s ease-in-out infinite" }} transform="translate(188,44)">
-        <circle r="11" fill="#1E9E5A" />
-        <path d="M-4.5 0.5 L-1.5 3.5 L5 -3.5" stroke="white" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      </g>
-
-      {/* small floating chat/notification dot */}
-      <g transform="translate(70,50)" style={{ animation: "rise 2.6s ease-in-out infinite 1s" }}>
-        <circle r="7" fill="#F6F7FB" opacity="0.85" />
-        <circle r="2.5" fill="rgb(11,22,111)" />
       </g>
     </svg>
   );
@@ -566,24 +458,19 @@ function LocationGate({ status, place, onRecheck, onConfirm }) {
     <div className="min-h-[65vh] flex items-center justify-center px-4 py-8">
       <div className="w-full max-w-sm text-center bg-white border border-slate-200 rounded-2xl shadow-lg shadow-slate-200/60 px-6 sm:px-7 py-8">
         <div className="relative w-12 h-12 mx-auto mb-4 flex items-center justify-center">
-          {status === "checking" && (
-            <span className="absolute inset-0 rounded-full border-2 border-slate-200" style={{ borderTopColor: EMERALD }}>
-              <Loader2 size={0} />
-            </span>
-          )}
           {status === "checking" && <div className="absolute inset-0 rounded-full border-2 border-slate-200 border-t-transparent animate-spin" style={{ borderTopColor: EMERALD }} />}
           <div
             className="w-9 h-9 rounded-full flex items-center justify-center"
-            style={{ background: status === "not-rwanda" ? "#FEF2F2" : "#ECFDF5" }}
+            style={{ background: status === "not-rwanda" ? "#FFF1EC" : "#ECFDF5" }}
           >
             {status === "ready" && <CheckCircle2 size={18} color={EMERALD} strokeWidth={2.5} />}
             {status === "checking" && <MapPin size={16} color={EMERALD} strokeWidth={2.5} />}
-            {status === "not-rwanda" && <AlertCircle size={18} color="#DC2626" strokeWidth={2.5} />}
-            {status === "error" && <AlertCircle size={18} color="#DC2626" strokeWidth={2.5} />}
+            {status === "not-rwanda" && <AlertCircle size={18} color={ORANGE} strokeWidth={2.5} />}
+            {status === "error" && <AlertCircle size={18} color={ORANGE} strokeWidth={2.5} />}
           </div>
         </div>
 
-        <div className="flex items-center justify-center gap-1.5 text-[10px] tracking-widest font-bold mb-1.5" style={{ color: AMBER }}>
+        <div className="flex items-center justify-center gap-1.5 text-[10px] tracking-widest font-bold mb-1.5" style={{ color: ORANGE }}>
           <RwandaFlag size={14} />
           {t.gateBadge}
         </div>
@@ -605,7 +492,7 @@ function LocationGate({ status, place, onRecheck, onConfirm }) {
               type="button"
               onClick={onConfirm}
               className="w-full rounded-lg text-white text-sm font-bold py-2.5 hover:opacity-95 transition-opacity shadow-sm"
-              style={{ background: INK }}
+              style={{ background: EMERALD }}
             >
               {t.gateConfirm}
             </button>
@@ -636,7 +523,7 @@ function LocationGate({ status, place, onRecheck, onConfirm }) {
           <>
             <h1 className="text-lg font-bold mb-1.5" style={{ color: INK, fontFamily: "'Poppins', sans-serif" }}>{t.gateError[0]}</h1>
             <p className="text-xs text-slate-500 mb-5">{t.gateError[1]}</p>
-            <button type="button" onClick={onRecheck} className="w-full rounded-lg text-white text-sm font-bold py-2.5 hover:opacity-95 transition-opacity" style={{ background: INK }}>
+            <button type="button" onClick={onRecheck} className="w-full rounded-lg text-white text-sm font-bold py-2.5 hover:opacity-95 transition-opacity" style={{ background: EMERALD }}>
               {t.gateTryAgain}
             </button>
           </>
@@ -647,39 +534,8 @@ function LocationGate({ status, place, onRecheck, onConfirm }) {
 }
 
 /* ============================================================================
-   EMAIL DOMAIN CHECK — a preliminary heuristic only (MX lookup).
-   This can never *prove* a mailbox exists; the OTP step below is the real,
-   authoritative verification and is the only thing allowed to set `verified`.
-   ============================================================================ */
-
-function useEmailDomainCheck(email) {
-  const [state, setState] = useState({ status: "idle" }); // idle | checking | valid | invalid | unknown
-
-  useEffect(() => {
-    if (!isValidEmail(email)) {
-      setState({ status: "idle" });
-      return;
-    }
-    setState({ status: "checking" });
-    const domain = email.split("@")[1];
-    const handle = setTimeout(async () => {
-      try {
-        const res = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=MX`);
-        const data = await res.json();
-        const hasMx = Array.isArray(data.Answer) && data.Answer.length > 0;
-        setState({ status: hasMx ? "valid" : "invalid" });
-      } catch {
-        setState({ status: "unknown" });
-      }
-    }, 650);
-    return () => clearTimeout(handle);
-  }, [email]);
-
-  return state;
-}
-
-/* ============================================================================
-   PROGRESS STEPS — shared between the desktop rail and the mobile bar
+   STEPS BOX — small, replaces the old big blue gradient sidebar panel.
+   Used identically on mobile (as a top strip) and desktop (as the aside).
    ============================================================================ */
 
 function useProgressSteps({ locationDone, institutionDone, verified, paymentConfirmed }) {
@@ -690,6 +546,51 @@ function useProgressSteps({ locationDone, institutionDone, verified, paymentConf
     { icon: Mail, title: t.step3[0], short: t.step3Short, desc: t.step3[1], done: verified },
     { icon: CreditCard, title: t.step4[0], short: t.step4Short, desc: t.step4[1], done: paymentConfirmed },
   ];
+}
+
+function StepsBox({ steps, compact }) {
+  const t = useT();
+  const doneCount = steps.filter((s) => s.done).length;
+  const pct = (doneCount / steps.length) * 100;
+
+  return (
+    <div className={`bg-white border border-slate-200 rounded-2xl shadow-sm ${compact ? "p-4" : "p-5 sticky top-6"}`}>
+      <div className="flex items-center gap-1.5 text-[10px] font-bold tracking-widest mb-2.5" style={{ color: ORANGE }}>
+        <RwandaFlag size={13} /> {t.asideEyebrow}
+      </div>
+
+      <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden mb-3.5">
+        <div className="h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${pct}%`, background: EMERALD }} />
+      </div>
+
+      <ul className={compact ? "grid grid-cols-4 gap-1.5" : "space-y-3.5"}>
+        {steps.map((s, i) => {
+          const Icon = s.icon;
+          return (
+            <li key={i} className={compact ? "flex flex-col items-center gap-1" : "flex items-start gap-2.5"} style={{ animation: `stepIn 0.4s ease-out ${i * 0.07}s both` }}>
+              <span
+                className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 border transition-colors duration-300"
+                style={{
+                  background: s.done ? EMERALD : "#F1F3FA",
+                  borderColor: s.done ? EMERALD : LINE,
+                }}
+              >
+                {s.done ? <CheckCircle2 size={13} color="white" strokeWidth={2.75} /> : <Icon size={12} color={INK} strokeWidth={2.25} />}
+              </span>
+              {compact ? (
+                <span className="text-[9px] font-semibold text-slate-600 text-center leading-tight">{s.short}</span>
+              ) : (
+                <div className="pt-0.5">
+                  <div className="text-xs font-bold" style={{ color: INK }}>{s.title}</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">{s.desc}</div>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 /* ============================================================================
@@ -704,19 +605,10 @@ function RegistrationFormBody({ onLogin }) {
   const [success, setSuccess] = useState(false);
   const [apiError, setApiError] = useState("");
 
-  const [verifyModalOpen, setVerifyModalOpen] = useState(false);
-  const [sendingCode, setSendingCode] = useState(false);
-  const [otpValue, setOtpValue] = useState("");
-  const [verifying, setVerifying] = useState(false);
-  const [verifyError, setVerifyError] = useState("");
-
-  // `verified` only ever flips to true inside handleVerifyOtp, after the backend
-  // confirms the OTP that was emailed to `verifiedEmail`. If the person edits the
-  // email afterwards, verification no longer applies to the new address — see the
-  // effect below. This is what stops a typo'd / nonexistent address from ever
-  // showing as "verified".
+  // Google verification state — replaces the old typed-OTP flow entirely.
+  const [googleAccount, setGoogleAccount] = useState(null);
+  const [registeringWithGoogle, setRegisteringWithGoogle] = useState(false);
   const [verified, setVerified] = useState(false);
-  const [verifiedEmail, setVerifiedEmail] = useState("");
 
   const [schoolId, setSchoolId] = useState(null);
   const [schoolCode, setSchoolCode] = useState(null);
@@ -728,8 +620,6 @@ function RegistrationFormBody({ onLogin }) {
   const [paymentError, setPaymentError] = useState("");
   const pollRef = useRef(null);
 
-  const emailCheck = useEmailDomainCheck(form.schoolEmail);
-
   const set = (key, value) => setForm((f) => ({ ...f, [key]: value }));
 
   function toggleLevel(key) {
@@ -738,17 +628,6 @@ function RegistrationFormBody({ onLogin }) {
       levels: f.levels.includes(key) ? f.levels.filter((l) => l !== key) : [...f.levels, key],
     }));
   }
-
-  // If the email address changes after being verified, the old verification no
-  // longer means anything — drop it so the UI can never show "verified" next to
-  // an address nobody actually confirmed.
-  useEffect(() => {
-    if (verified && form.schoolEmail !== verifiedEmail) {
-      setVerified(false);
-      setSchoolId(null);
-      setSchoolCode(null);
-    }
-  }, [form.schoolEmail, verified, verifiedEmail]);
 
   const districtOptions = form.province ? DISTRICTS_BY_PROVINCE[form.province] : [];
   const districtTree = form.district ? buildDistrictTree(form.district) : {};
@@ -760,14 +639,13 @@ function RegistrationFormBody({ onLogin }) {
   const phoneDone = isValidRwandaPhone(form.phone);
   const institutionDone = !!(
     form.schoolName.trim() &&
-    isValidEmail(form.schoolEmail) &&
     phoneDone &&
     form.levels.length > 0 &&
     form.ownership &&
     form.residence
   );
 
-  const isFormValidExceptPayment = locationDone && institutionDone && emailCheck.status !== "invalid";
+  const isFormValidExceptPayment = locationDone && institutionDone;
   const paymentConfirmed = paymentStatus === "success";
   const isValid = isFormValidExceptPayment && verified && form.payment && paymentConfirmed;
   const showValidationError = submitted && !isValid;
@@ -778,9 +656,11 @@ function RegistrationFormBody({ onLogin }) {
     return () => clearInterval(pollRef.current);
   }, []);
 
-  async function handleSendCode() {
+  // Fired the moment GoogleAuthButton resolves. This single call both
+  // verifies the email (it's the email Google handed back) AND creates the
+  // school record — there's no separate "type the code we emailed you" step.
+  async function handleGoogleSignedIn(account) {
     setApiError("");
-    setVerifyError("");
 
     if (!isFormValidExceptPayment) {
       setSubmitted(true);
@@ -788,9 +668,11 @@ function RegistrationFormBody({ onLogin }) {
       return;
     }
 
-    setSendingCode(true);
+    setGoogleAccount(account);
+    setRegisteringWithGoogle(true);
+
     try {
-      const response = await fetch(`${API_BASE}/api/schools/request-verification`, {
+      const response = await fetch(`${API_BASE}/api/schools/register-with-google`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -801,7 +683,7 @@ function RegistrationFormBody({ onLogin }) {
           cell: form.cell,
           village: form.village,
           schoolName: form.schoolName,
-          schoolEmail: form.schoolEmail,
+          schoolEmail: account.email,
           phone: normalizeRwandaPhone(form.phone),
           levels: form.levels,
           ownership: form.ownership,
@@ -809,52 +691,33 @@ function RegistrationFormBody({ onLogin }) {
         }),
       });
       const result = await response.json();
+
       if (response.ok && result.success) {
-        setOtpValue("");
-        setVerifyModalOpen(true);
+        set("schoolEmail", account.email);
+        setSchoolId(result.schoolId);
+        setSchoolCode(result.schoolCode);
+        setVerified(true);
       } else {
+        setGoogleAccount(null);
         setApiError(result.message || t.serverError);
       }
     } catch (err) {
       console.error(err);
+      setGoogleAccount(null);
       setApiError(t.networkError);
     } finally {
-      setSendingCode(false);
+      setRegisteringWithGoogle(false);
     }
   }
 
-  async function handleVerifyOtp(e) {
-    e.preventDefault();
-    setVerifying(true);
-    setVerifyError("");
-
-    try {
-      const response = await fetch(`${API_BASE}/api/schools/verify-email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: form.schoolEmail, otp: otpValue }),
-      });
-      const result = await response.json();
-
-      // Only a genuine, positive confirmation from the backend — which only ever
-      // happens if the code we emailed to this address was typed back correctly —
-      // is allowed to flip `verified` to true. A wrong or nonexistent email never
-      // receives the code, so it can never pass this check.
-      if (response.ok && result.success) {
-        setSchoolId(result.schoolId);
-        setSchoolCode(result.schoolCode);
-        setVerified(true);
-        setVerifiedEmail(form.schoolEmail);
-        setVerifyModalOpen(false);
-      } else {
-        setVerifyError(result.message || t.verifyFailed);
-      }
-    } catch (err) {
-      console.error(err);
-      setVerifyError(t.networkError);
-    } finally {
-      setVerifying(false);
-    }
+  function handleSwitchGoogleAccount() {
+    setGoogleAccount(null);
+    setVerified(false);
+    setSchoolId(null);
+    setSchoolCode(null);
+    set("schoolEmail", "");
+    set("payment", "");
+    setPaymentStatus("idle");
   }
 
   function handlePickPayment(methodKey) {
@@ -931,13 +794,9 @@ function RegistrationFormBody({ onLogin }) {
     setSubmitted(false);
     setSuccess(false);
     setApiError("");
-    setVerifyModalOpen(false);
-    setSendingCode(false);
-    setOtpValue("");
-    setVerifying(false);
-    setVerifyError("");
+    setGoogleAccount(null);
+    setRegisteringWithGoogle(false);
     setVerified(false);
-    setVerifiedEmail("");
     setSchoolId(null);
     setSchoolCode(null);
     setPaymentStatus("idle");
@@ -957,13 +816,17 @@ function RegistrationFormBody({ onLogin }) {
         {t.locationVerified}
       </div>
 
-      <MobileProgressBar steps={steps} />
+      <div className="lg:hidden mb-4">
+        <StepsBox steps={steps} compact />
+      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6">
-        <ProgressRail steps={steps} />
+      <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
+        <aside className="hidden lg:block">
+          <StepsBox steps={steps} />
+        </aside>
 
         <div className="bg-white border border-slate-200 rounded-2xl shadow-lg shadow-slate-200/50 px-4 py-6 sm:px-8 sm:py-8">
-          <div className="text-[10px] tracking-widest font-bold mb-1.5" style={{ color: AMBER }}>{t.formEyebrow}</div>
+          <div className="text-[10px] tracking-widest font-bold mb-1.5" style={{ color: ORANGE }}>{t.formEyebrow}</div>
           <h1 className="text-xl sm:text-2xl font-bold mb-1.5" style={{ color: INK, fontFamily: "'Poppins', sans-serif" }}>{t.formTitle}</h1>
           <p className="text-xs text-slate-500 mb-6 max-w-md">{t.formDesc}</p>
 
@@ -979,14 +842,14 @@ function RegistrationFormBody({ onLogin }) {
               villageOptions={villageOptions}
             />
 
-            <InstitutionFields form={form} set={set} toggleLevel={toggleLevel} emailCheck={emailCheck} phoneDone={phoneDone} />
+            <InstitutionFields form={form} set={set} toggleLevel={toggleLevel} phoneDone={phoneDone} />
 
-            <VerifyEmailField
+            <GoogleVerifyField
               verified={verified}
-              sendingCode={sendingCode}
-              onSendCode={handleSendCode}
-              email={form.schoolEmail}
-              emailChanged={verified === false && verifiedEmail && verifiedEmail !== form.schoolEmail}
+              registering={registeringWithGoogle}
+              googleAccount={googleAccount}
+              onSignedIn={handleGoogleSignedIn}
+              onSwitch={handleSwitchGoogleAccount}
             />
 
             <PaymentField
@@ -997,12 +860,12 @@ function RegistrationFormBody({ onLogin }) {
             />
 
             {showValidationError && (
-              <p className="flex items-center gap-1.5 text-xs text-red-600 font-medium">
+              <p className="flex items-center gap-1.5 text-xs font-medium" style={{ color: ORANGE }}>
                 <AlertCircle size={14} strokeWidth={2.5} /> {t.validationError}
               </p>
             )}
             {apiError && (
-              <p className="flex items-center gap-1.5 text-xs text-red-600 font-medium">
+              <p className="flex items-center gap-1.5 text-xs font-medium" style={{ color: ORANGE }}>
                 <AlertCircle size={14} strokeWidth={2.5} /> {apiError}
               </p>
             )}
@@ -1026,20 +889,6 @@ function RegistrationFormBody({ onLogin }) {
         </div>
       </div>
 
-      {verifyModalOpen && (
-        <VerifyOtpModal
-          email={form.schoolEmail}
-          otpValue={otpValue}
-          setOtpValue={setOtpValue}
-          verifying={verifying}
-          verifyError={verifyError}
-          sendingCode={sendingCode}
-          onSubmit={handleVerifyOtp}
-          onResend={handleSendCode}
-          onClose={() => setVerifyModalOpen(false)}
-        />
-      )}
-
       {paymentModalOpen && (
         <PaymentModal
           method={PAYMENT_METHODS.find((m) => m.key === form.payment)}
@@ -1054,135 +903,6 @@ function RegistrationFormBody({ onLogin }) {
         />
       )}
     </div>
-  );
-}
-
-/* ---------------------------- Mobile compact progress bar ---------------------------- */
-
-function MobileProgressBar({ steps }) {
-  const t = useT();
-  const doneCount = steps.filter((s) => s.done).length;
-  const pct = (doneCount / steps.length) * 100;
-
-  return (
-    <div className="lg:hidden mb-4 rounded-2xl p-4 relative overflow-hidden bg-white border border-slate-200 shadow-sm">
-      <div className="absolute -top-8 -right-8 w-28 h-28 rounded-full opacity-15 pointer-events-none" style={{ background: EMERALD, filter: "blur(30px)", animation: "drift 9s ease-in-out infinite" }} />
-
-      <div className="relative flex items-center gap-3">
-        <div className="w-16 h-16 shrink-0 rounded-xl p-1.5" style={{ background: "#F1F3FA" }}>
-          <StudentIllustration />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-[9px] font-bold tracking-widest mb-1" style={{ color: AMBER }}>
-            <RwandaFlag size={12} /> {t.asideEyebrow}
-          </div>
-          <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-            <div className="h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${pct}%`, background: EMERALD }} />
-          </div>
-        </div>
-      </div>
-
-      <div className="relative mt-3 grid grid-cols-4 gap-1.5">
-        {steps.map((s, i) => {
-          const Icon = s.icon;
-          return (
-            <div key={i} className="flex flex-col items-center gap-1">
-              <span
-                className="w-7 h-7 rounded-full flex items-center justify-center border transition-colors duration-300"
-                style={{
-                  background: s.done ? EMERALD : "#F1F3FA",
-                  borderColor: s.done ? EMERALD : LINE,
-                }}
-              >
-                {s.done ? <CheckCircle2 size={13} color="white" strokeWidth={2.75} /> : <Icon size={12} color={INK} strokeWidth={2.25} />}
-              </span>
-              <span className="text-[9px] font-semibold text-slate-600 text-center leading-tight">{s.short}</span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------- Progress rail (signature element) ---------------------------- */
-
-function ProgressRail({ steps }) {
-  const t = useT();
-  const completedCount = steps.filter((s) => s.done).length;
-  const fillPct = (completedCount / steps.length) * 100;
-
-  return (
-    <aside className="hidden lg:block">
-      <div
-        className="sticky top-6 rounded-2xl p-6 overflow-hidden relative"
-        style={{ background: `linear-gradient(165deg, ${INK} 0%, ${INK_DARK} 100%)` }}
-      >
-        {/* ambient drifting shapes — quiet, not decorative noise */}
-        <div
-          className="absolute -top-10 -right-10 w-40 h-40 rounded-full opacity-20 pointer-events-none"
-          style={{ background: EMERALD, filter: "blur(40px)", animation: "drift 9s ease-in-out infinite" }}
-        />
-        <div
-          className="absolute bottom-0 -left-8 w-32 h-32 rounded-full opacity-10 pointer-events-none"
-          style={{ background: AMBER, filter: "blur(36px)", animation: "drift 11s ease-in-out infinite reverse" }}
-        />
-
-        <div className="relative">
-          <div className="flex items-center gap-1.5 text-[10px] tracking-widest font-bold mb-2" style={{ color: "#E8A72E" }}>
-            <RwandaFlag size={14} />
-            {t.asideEyebrow}
-          </div>
-          <h2 className="text-base font-bold mb-2 leading-snug text-white" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.asideTitle}</h2>
-          <p className="text-xs text-white/70 mb-4 leading-relaxed">{t.asideDesc}</p>
-
-          {/* signature illustration: student profile on a laptop */}
-          <div className="mb-5 -mx-1">
-            <StudentIllustration />
-          </div>
-
-          <div className="relative">
-            {/* base track + animated fill */}
-            <div className="absolute left-[13px] top-2 bottom-2 w-px bg-white/15" />
-            <div
-              className="absolute left-[13px] top-2 w-px transition-all duration-700 ease-out"
-              style={{ height: `calc(${fillPct}% - 8px)`, background: EMERALD }}
-            />
-
-            <ul className="space-y-5 relative">
-              {steps.map((s, i) => {
-                const Icon = s.icon;
-                return (
-                  <li
-                    key={i}
-                    className="flex items-start gap-3"
-                    style={{ animation: `stepIn 0.45s ease-out ${i * 0.08}s both` }}
-                  >
-                    <span
-                      className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 border transition-colors duration-300"
-                      style={{
-                        background: s.done ? EMERALD : "rgba(255,255,255,0.08)",
-                        borderColor: s.done ? EMERALD : "rgba(255,255,255,0.2)",
-                      }}
-                    >
-                      {s.done ? (
-                        <CheckCircle2 size={14} color="white" strokeWidth={2.75} style={{ animation: "popIn 0.3s ease-out" }} />
-                      ) : (
-                        <Icon size={13} color="rgba(255,255,255,0.85)" strokeWidth={2.25} />
-                      )}
-                    </span>
-                    <div className="pt-0.5">
-                      <div className="text-xs font-semibold text-white">{s.title}</div>
-                      <div className="text-[11px] text-white/60 mt-0.5">{s.desc}</div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        </div>
-      </div>
-    </aside>
   );
 }
 
@@ -1302,40 +1022,18 @@ function LocationFields({ form, setForm, districtOptions, sectorOptions, cellOpt
   );
 }
 
-function EmailDomainStatus({ emailCheck }) {
-  const t = useT();
-  if (emailCheck.status === "idle") return null;
-
-  const map = {
-    checking: { icon: Loader2, text: t.emailChecking, color: "#64748B", spin: true },
-    valid: { icon: BadgeCheck, text: t.emailValidDomain, color: EMERALD, spin: false },
-    invalid: { icon: AlertCircle, text: t.emailInvalidDomain, color: "#DC2626", spin: false },
-    unknown: { icon: AlertCircle, text: t.emailCheckFailed, color: "#94A3B8", spin: false },
-  };
-  const cfg = map[emailCheck.status];
-  if (!cfg) return null;
-  const Icon = cfg.icon;
-
-  return (
-    <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium" style={{ color: cfg.color }}>
-      <Icon size={12} strokeWidth={2.5} className={cfg.spin ? "animate-spin" : ""} />
-      {cfg.text}
-    </div>
-  );
-}
-
 function PhoneStatus({ phone, phoneDone }) {
   const t = useT();
   if (!phone) return null;
   return (
-    <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium" style={{ color: phoneDone ? EMERALD : "#DC2626" }}>
-      {phoneDone ? <BadgeCheck size={12} strokeWidth={2.5} /> : <AlertCircle size={12} strokeWidth={2.5} />}
+    <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium" style={{ color: phoneDone ? EMERALD : ORANGE }}>
+      {phoneDone ? <CheckCircle2 size={12} strokeWidth={2.5} /> : <AlertCircle size={12} strokeWidth={2.5} />}
       {phoneDone ? t.phoneValid : t.phoneInvalid}
     </div>
   );
 }
 
-function InstitutionFields({ form, set, toggleLevel, emailCheck, phoneDone }) {
+function InstitutionFields({ form, set, toggleLevel, phoneDone }) {
   const t = useT();
   return (
     <div>
@@ -1354,42 +1052,24 @@ function InstitutionFields({ form, set, toggleLevel, emailCheck, phoneDone }) {
           />
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          <div>
-            <div className="relative">
-              <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" strokeWidth={2} />
-              <input
-                className={`${selClass} pl-9`}
-                type="email"
-                value={form.schoolEmail}
-                onFocus={(e) => focusRing(e, true)}
-                onBlur={(e) => focusRing(e, false)}
-                onChange={(e) => set("schoolEmail", e.target.value)}
-                placeholder={t.emailPh}
-              />
-            </div>
-            <EmailDomainStatus emailCheck={emailCheck} />
+        <div>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+              <RwandaFlag size={14} />
+            </span>
+            <input
+              className={`${selClass} pl-10`}
+              type="tel"
+              inputMode="numeric"
+              value={form.phone}
+              maxLength={13}
+              onFocus={(e) => focusRing(e, true)}
+              onBlur={(e) => focusRing(e, false)}
+              onChange={(e) => set("phone", e.target.value.replace(/[^\d+\s-]/g, ""))}
+              placeholder={t.phonePh}
+            />
           </div>
-
-          <div>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                <RwandaFlag size={14} />
-              </span>
-              <input
-                className={`${selClass} pl-10`}
-                type="tel"
-                inputMode="numeric"
-                value={form.phone}
-                maxLength={13}
-                onFocus={(e) => focusRing(e, true)}
-                onBlur={(e) => focusRing(e, false)}
-                onChange={(e) => set("phone", e.target.value.replace(/[^\d+\s-]/g, ""))}
-                placeholder={t.phonePh}
-              />
-            </div>
-            <PhoneStatus phone={form.phone} phoneDone={phoneDone} />
-          </div>
+          <PhoneStatus phone={form.phone} phoneDone={phoneDone} />
         </div>
 
         <div>
@@ -1454,104 +1134,35 @@ function InstitutionFields({ form, set, toggleLevel, emailCheck, phoneDone }) {
   );
 }
 
-function VerifyEmailField({ verified, sendingCode, onSendCode, email, emailChanged }) {
+// Replaces the old typed-OTP flow. One Google account = one verified email.
+function GoogleVerifyField({ verified, registering, googleAccount, onSignedIn, onSwitch }) {
   const t = useT();
   return (
     <div>
       <SectionLabel icon={ShieldCheck}>{t.verifySection}</SectionLabel>
       <p className="text-[11px] text-slate-400 mb-2.5 -mt-1">{t.verifyHint}</p>
 
-      {emailChanged && (
-        <p className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-600 mb-2.5">
-          <AlertCircle size={12} strokeWidth={2.5} /> {t.emailChangedNotice}
-        </p>
-      )}
-
-      {verified ? (
-        <div className="flex items-center gap-2 rounded-lg border px-3.5 py-2.5" style={{ borderColor: EMERALD, background: "#ECFDF5" }}>
-          <span className="w-5 h-5 rounded-full flex items-center justify-center shrink-0" style={{ background: EMERALD }}>
-            <CheckCircle2 size={12} color="white" strokeWidth={3} />
+      {verified && googleAccount ? (
+        <div className="flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5" style={{ borderColor: EMERALD, background: "#ECFDF5" }}>
+          <span className="w-8 h-8 rounded-full bg-white flex items-center justify-center shrink-0 ring-1" style={{ boxShadow: `0 0 0 1px ${EMERALD}33` }}>
+            <CheckCircle2 size={16} color={EMERALD} strokeWidth={2.5} />
           </span>
-          <span className="text-xs font-semibold break-all" style={{ color: INK }}>
-            {t.verifiedBadge} — {email}
-          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-bold" style={{ color: INK }}>{t.verifiedBadge}</p>
+            <p className="text-[10px] text-slate-500 truncate">{googleAccount.email}</p>
+          </div>
+          <button type="button" onClick={onSwitch} className="text-[10px] font-bold shrink-0" style={{ color: EMERALD }}>
+            {t.switchAccount}
+          </button>
+        </div>
+      ) : registering ? (
+        <div className="flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5" style={{ borderColor: LINE, background: "#F8FAFF" }}>
+          <Loader2 size={16} className="animate-spin" color={INK} strokeWidth={2.5} />
+          <span className="text-xs font-semibold" style={{ color: INK }}>{t.registering}</span>
         </div>
       ) : (
-        <button
-          type="button"
-          onClick={onSendCode}
-          disabled={sendingCode}
-          className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 rounded-lg border font-bold px-4 py-2.5 text-xs hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-wait transition-colors"
-          style={{ borderColor: EMERALD, color: EMERALD }}
-        >
-          {sendingCode ? <Loader2 size={13} className="animate-spin" /> : <ClipboardCheck size={13} strokeWidth={2.5} />}
-          {sendingCode ? t.sendingCode : t.sendCode}
-        </button>
+        <GoogleAuthButton onSignedIn={onSignedIn} label={t.continueWithGoogle} />
       )}
-    </div>
-  );
-}
-
-function VerifyOtpModal({ email, otpValue, setOtpValue, verifying, verifyError, sendingCode, onSubmit, onResend, onClose }) {
-  const t = useT();
-  return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
-      <div className="bg-white rounded-2xl max-w-xs w-full p-5 space-y-3 shadow-2xl" style={{ animation: "popIn 0.2s ease-out" }}>
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <p className="font-bold text-xs flex items-center gap-1.5" style={{ color: INK }}>
-            <Mail size={14} strokeWidth={2.5} /> {t.verifyModalTitle}
-          </p>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600" aria-label={t.close}>
-            <X size={15} strokeWidth={2.5} />
-          </button>
-        </div>
-
-        <form onSubmit={onSubmit} className="space-y-3 text-xs">
-          <p className="text-slate-500 text-[11px] break-all">
-            {t.verifyModalDesc} <span className="font-semibold" style={{ color: INK }}>{email}</span>.
-          </p>
-          <div>
-            <label className="text-[11px] font-semibold text-slate-600 mb-1 block">{t.otpLabel}</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              maxLength={6}
-              required
-              value={otpValue}
-              onChange={(e) => setOtpValue(e.target.value.replace(/\D/g, ""))}
-              placeholder={t.otpPlaceholder}
-              onFocus={(e) => focusRing(e, true)}
-              onBlur={(e) => focusRing(e, false)}
-              className={`${selClass} text-center tracking-[0.4em] font-bold`}
-            />
-          </div>
-
-          {verifyError && (
-            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-red-600">
-              <AlertCircle size={12} strokeWidth={2.5} /> {verifyError}
-            </p>
-          )}
-
-          <button
-            type="submit"
-            disabled={verifying || otpValue.length !== 6}
-            className="w-full py-2.5 text-white font-bold text-[11px] rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: EMERALD }}
-          >
-            {verifying ? t.verifying : t.verifyBtn}
-          </button>
-
-          <button
-            type="button"
-            onClick={onResend}
-            disabled={sendingCode}
-            className="w-full text-[11px] font-semibold py-1 disabled:opacity-50"
-            style={{ color: INK }}
-          >
-            {sendingCode ? t.sendingCode : t.resendCode}
-          </button>
-        </form>
-      </div>
     </div>
   );
 }
@@ -1685,8 +1296,8 @@ function PaymentModal({ method, payerPhone, setPayerPhone, paymentAmount, setPay
 
         {paymentStatus === "failed" && (
           <div className="text-center py-3 space-y-3">
-            <AlertCircle size={20} color="#DC2626" strokeWidth={2.5} className="mx-auto" />
-            <p className="text-[11px] font-semibold text-red-600">{paymentError || t.paymentFailed}</p>
+            <AlertCircle size={20} color={ORANGE} strokeWidth={2.5} className="mx-auto" />
+            <p className="text-[11px] font-semibold" style={{ color: ORANGE }}>{paymentError || t.paymentFailed}</p>
             <button type="button" onClick={onClose} className="w-full py-2 border border-slate-200 font-bold text-[11px] rounded-lg hover:bg-slate-50 transition-colors" style={{ color: INK }}>
               {t.close}
             </button>
@@ -1717,6 +1328,11 @@ function SuccessScreen({ form, schoolCode, onRegisterAnother }) {
             <div className="text-[11px] text-slate-500 mt-1">{t.keepCodeSafe}</div>
           </div>
         )}
+
+        <div className="mb-5 flex items-start gap-2 rounded-xl border px-3.5 py-3 text-left" style={{ borderColor: ORANGE + "55", background: ORANGE_BG }}>
+          <Clock3 size={15} color={ORANGE} strokeWidth={2.5} className="shrink-0 mt-0.5" />
+          <p className="text-[11px] leading-relaxed" style={{ color: "#9A3412" }}>{t.pendingVerification}</p>
+        </div>
 
         <button
           type="button"
