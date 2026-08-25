@@ -1,59 +1,53 @@
 // teacher.js — teacher-facing dashboard API.
 // Mount in easy.js at: app.use("/api/teacher", teacherRoutes.router);
 //
-// FLOW THIS FILE SUPPORTS (class + period are chosen by the teacher, never
-// by the school admin):
+// FLOW THIS FILE SUPPORTS (class + subject are chosen by the teacher,
+// never by the school admin):
 //   1. Teacher signs up with Google -> POST /api/users/register-google
 //      (in easy.js) creates a users row with status='pending_approval'.
-//      No class is attached at this point.
-//   2. School admin approves from School_Admin.jsx -> schoolAdmin.js's
-//      POST /approvals/:id/approve ONLY flips status to 'approved'. It
-//      never asks for or writes a class/subject/period for a teacher —
-//      that stays entirely the teacher's own choice. Nothing to fix there.
+//   2. School admin approves from School_Admin.jsx -> only flips status
+//      to 'approved'. Never writes a class/subject for a teacher.
 //   3. Teacher signs in with Google -> POST /api/users/login-google (in
-//      easy.js) issues a bearer session token AND now also returns
-//      `assignments`: every class + subject + period this teacher has
-//      already picked (an empty array for a brand-new approved teacher).
-//        - 0 assignments  -> Home.jsx makes the teacher choose a class,
-//          subject and period right there in the login flow (GET
-//          /api/teacher/classes below, then POST /api/teacher/assignments
-//          below) before it will navigate to the dashboard.
-//        - 1 assignment   -> Home.jsx signs them straight into it.
-//        - 2+ assignments -> Home.jsx lets them pick which one they're
-//          signing in for right now (or add a new one), then navigates
-//          with that specific assignment attached to router state.
+//      easy.js) issues a bearer session token AND returns `assignments`.
 //   4. Teacher dashboard calls:
-//        GET  /api/teacher/me          -> their own name/email/school
-//        GET  /api/teacher/classes     -> every class their school's
-//                                          admin has created, to choose from
-//        GET  /api/teacher/assignments -> classes+subjects+periods they've
-//                                          already picked
-//        POST /api/teacher/assignments -> pick a new class + subject + period
-//        DELETE /api/teacher/assignments/:id -> drop one they no longer teach
-//        GET  /api/teacher/students?assignmentId= -> ONLY the approved
-//          students sitting in the exact class tied to that assignment.
-//          The assignment must belong to the signed-in teacher — a
-//          class/assignment id can never be borrowed from someone else.
+//        GET  /api/teacher/me
+//        GET  /api/teacher/classes
+//        GET  /api/teacher/assignments
+//        POST /api/teacher/assignments
+//        DELETE /api/teacher/assignments/:id
+//        GET  /api/teacher/students?assignmentId=
+//        GET    /api/teacher/notes
+//        POST   /api/teacher/notes
+//        PATCH  /api/teacher/notes/:id
+//        DELETE /api/teacher/notes/:id
+//        GET    /api/teacher/quizzes
+//        POST   /api/teacher/quizzes
+//        PATCH  /api/teacher/quizzes/:id
+//        DELETE /api/teacher/quizzes/:id
 //
-// REQUIRED MIGRATION — teacher_assignments needs a `period` column (a
-// lesson slot, e.g. "Period 3" or "Mon 08:00–08:40"). Run before deploying
-// this file:
+// SCHEMA NOTES:
+//   - teacher_assignments has NO `period` column and never has:
+//       id, teacher_id, class_combination_id, subject, created_at
+//     unique constraint: (teacher_id, class_combination_id, subject).
+//   - notes.class_id and quizzes.class_id must already be repointed at
+//     class_combinations(id) (uuid) — run the migration email that shipped
+//     alongside this file before using the routes below.
+//   - notes also has file_url, file_type ('image'|'video'|'pdf'|'file'), file_name.
+//   - quizzes also has starts_at, ends_at (both timestamptz, both optional).
+//   - quiz_options only supports multiple-choice grading (is_correct
+//     boolean) — there is no "written / manually graded" question type in
+//     this schema.
 //
-//   ALTER TABLE teacher_assignments ADD COLUMN period TEXT;
-//   -- Drop whatever your existing teacher_id+class_combination_id+subject
-//   -- unique constraint is actually called, then recreate it including
-//   -- period so the same class+subject can be taught in different periods:
-//   ALTER TABLE teacher_assignments
-//     DROP CONSTRAINT IF EXISTS teacher_assignments_teacher_id_class_combination_id_subject_key;
-//   ALTER TABLE teacher_assignments
-//     ADD CONSTRAINT teacher_assignments_unique_slot
-//     UNIQUE (teacher_id, class_combination_id, subject, period);
+// Every note/quiz create is checked against teacher_assignments so a
+// teacher can only save into a class+subject they actually teach — never
+// trusted from the request body alone.
+//
+// Every save/update/delete route below returns a human-readable `message`
+// field so the frontend can show a real confirmation instead of guessing.
 //
 // SESSIONS — this file OWNS the shared user-session store (userSessions /
 // createUserSession / requireUserSession, all exported below). easy.js's
-// POST /api/users/login-google calls THIS file's createUserSession() —
-// it must never keep its own separate Map, or tokens minted there won't
-// be recognized by any route below. That fix is applied in easy.js.
+// POST /api/users/login-google calls THIS file's createUserSession().
 
 const express = require("express");
 const crypto = require("crypto");
@@ -63,9 +57,6 @@ const router = express.Router();
 
 const USER_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
-// token -> { userId, role, fullName, email, schoolId, expiresAt }
-// Shared by easy.js's /api/users/login-google (writes) and every route
-// below (reads via requireUserSession).
 const userSessions = new Map();
 
 function createUserSession(user) {
@@ -96,9 +87,23 @@ function requireTeacher(req, res, next) {
 router.use(requireUserSession, requireTeacher);
 
 // ------------------------------------------------------------------
-// GET /api/teacher/me — name, email, status, school name for the
-// dashboard header. Pulled fresh from the DB (not just the session) so a
-// suspension by the admin shows up immediately.
+// Shared helper: confirms the signed-in teacher actually teaches this
+// exact class+subject before letting them create/edit/delete a note or
+// quiz for it.
+// ------------------------------------------------------------------
+async function assertTeachesClassSubject(teacherId, classCombinationId, subject) {
+  const result = await pool.query(
+    `SELECT id FROM teacher_assignments
+     WHERE teacher_id = $1 AND class_combination_id = $2 AND subject = $3`,
+    [teacherId, classCombinationId, subject]
+  );
+  return result.rows.length > 0;
+}
+
+const VALID_FILE_TYPES = ["image", "video", "pdf", "file"];
+
+// ------------------------------------------------------------------
+// GET /api/teacher/me
 // ------------------------------------------------------------------
 router.get("/me", async (req, res) => {
   try {
@@ -123,9 +128,7 @@ router.get("/me", async (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// GET /api/teacher/classes — every class the teacher's OWN school admin
-// has created (school scoped from the session, never from the client),
-// so the teacher can choose which one(s) to teach.
+// GET /api/teacher/classes
 // ------------------------------------------------------------------
 router.get("/classes", async (req, res) => {
   try {
@@ -144,18 +147,19 @@ router.get("/classes", async (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// GET /api/teacher/assignments — classes + subjects + periods this
-// teacher has already picked for themself.
+// GET /api/teacher/assignments — the teacher's REAL classes + subjects.
+// This is the only source of truth the dashboard should use for "which
+// classes can I save this to" — never a hardcoded list.
 // ------------------------------------------------------------------
 router.get("/assignments", async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT ta.id, ta.subject, ta.period, ta.class_combination_id AS "classCombinationId",
+      `SELECT ta.id, ta.subject, ta.class_combination_id AS "classCombinationId",
               cc.display_name AS "className"
        FROM teacher_assignments ta
        JOIN class_combinations cc ON cc.id = ta.class_combination_id
        WHERE ta.teacher_id = $1
-       ORDER BY cc.display_name ASC, ta.period ASC`,
+       ORDER BY cc.display_name ASC, ta.subject ASC`,
       [req.user.userId]
     );
     res.json({ success: true, assignments: result.rows });
@@ -166,44 +170,58 @@ router.get("/assignments", async (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// POST /api/teacher/assignments — teacher picks a class + subject +
-// period for themself. The class must belong to their own school —
-// checked server-side, never trusted from the request body — so a
-// teacher can never assign themself into another school's class.
+// POST /api/teacher/assignments
 // ------------------------------------------------------------------
 router.post("/assignments", async (req, res) => {
-  const { classCombinationId, subject, period } = req.body;
-  if (!classCombinationId || !subject || !subject.trim() || !period || !period.trim()) {
-    return res.status(400).json({ success: false, message: "Choose a class, and enter a subject and period." });
+  const { assignments } = req.body;
+  if (!Array.isArray(assignments) || assignments.length === 0) {
+    return res.status(400).json({ success: false, message: "Pick at least one class and subject." });
   }
+
+  const cleaned = assignments
+    .map((a) => ({
+      classCombinationId: a && a.classCombinationId,
+      subject: a && typeof a.subject === "string" ? a.subject.trim() : "",
+    }))
+    .filter((a) => a.classCombinationId && a.subject);
+
+  if (cleaned.length === 0) {
+    return res.status(400).json({ success: false, message: "Pick at least one class and subject." });
+  }
+
   try {
-    const owns = await pool.query(
-      `SELECT id, display_name FROM class_combinations WHERE id = $1 AND school_id = $2`,
-      [classCombinationId, req.user.schoolId]
+    const classIds = [...new Set(cleaned.map((a) => a.classCombinationId))];
+    const owned = await pool.query(
+      `SELECT id, display_name FROM class_combinations WHERE id = ANY($1) AND school_id = $2`,
+      [classIds, req.user.schoolId]
     );
-    if (owns.rows.length === 0) {
-      return res.status(404).json({ success: false, message: "That class doesn't belong to your school." });
+    const ownedMap = new Map(owned.rows.map((r) => [r.id, r.display_name]));
+
+    const invalid = classIds.find((id) => !ownedMap.has(id));
+    if (invalid) {
+      return res.status(404).json({ success: false, message: "One of those classes doesn't belong to your school." });
     }
-    const result = await pool.query(
-      `INSERT INTO teacher_assignments (teacher_id, class_combination_id, subject, period)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (teacher_id, class_combination_id, subject, period) DO NOTHING
-       RETURNING id`,
-      [req.user.userId, classCombinationId, subject.trim(), period.trim()]
+
+    for (const { classCombinationId, subject } of cleaned) {
+      await pool.query(
+        `INSERT INTO teacher_assignments (teacher_id, class_combination_id, subject)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (teacher_id, class_combination_id, subject) DO NOTHING`,
+        [req.user.userId, classCombinationId, subject]
+      );
+    }
+
+    const all = await pool.query(
+      `SELECT ta.id, ta.subject, ta.class_combination_id AS "classCombinationId",
+              cc.display_name AS "className"
+       FROM teacher_assignments ta
+       JOIN class_combinations cc ON cc.id = ta.class_combination_id
+       WHERE ta.teacher_id = $1
+       ORDER BY cc.display_name ASC, ta.subject ASC`,
+      [req.user.userId]
     );
-    if (result.rows.length === 0) {
-      return res.status(400).json({ success: false, message: "You're already assigned to that class, subject and period." });
-    }
-    res.json({
-      success: true,
-      assignment: {
-        id: result.rows[0].id,
-        classCombinationId,
-        className: owns.rows[0].display_name,
-        subject: subject.trim(),
-        period: period.trim(),
-      },
-    });
+
+    res.json({ success: true, message: "Classes saved.", assignments: all.rows });
   } catch (error) {
     console.log("Error in POST /api/teacher/assignments:", error);
     res.status(500).json({ success: false, message: error.message });
@@ -211,9 +229,7 @@ router.post("/assignments", async (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// DELETE /api/teacher/assignments/:id — drop a class/subject/period the
-// teacher no longer wants. Scoped to teacher_id so one teacher can never
-// delete another teacher's assignment by guessing an id.
+// DELETE /api/teacher/assignments/:id
 // ------------------------------------------------------------------
 router.delete("/assignments/:id", async (req, res) => {
   try {
@@ -224,7 +240,7 @@ router.delete("/assignments/:id", async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: "Assignment not found." });
     }
-    res.json({ success: true });
+    res.json({ success: true, message: "Removed." });
   } catch (error) {
     console.log("Error in DELETE /api/teacher/assignments/:id:", error);
     res.status(500).json({ success: false, message: error.message });
@@ -232,12 +248,7 @@ router.delete("/assignments/:id", async (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// GET /api/teacher/students?assignmentId=123 — the whole point of this
-// file's update. Returns ONLY approved students sitting in the exact
-// class tied to that assignment. The assignment id is always resolved
-// against ta.teacher_id = the signed-in teacher first — a class can
-// never be read by handing in someone else's assignment id, and a
-// student is never returned unless status = 'approved'.
+// GET /api/teacher/students?assignmentId=123
 // ------------------------------------------------------------------
 router.get("/students", async (req, res) => {
   const { assignmentId } = req.query;
@@ -246,16 +257,16 @@ router.get("/students", async (req, res) => {
   }
   try {
     const assignment = await pool.query(
-      `SELECT ta.id, ta.class_combination_id, ta.subject, ta.period, cc.display_name AS class_name
+      `SELECT ta.id, ta.class_combination_id, ta.subject, cc.display_name AS class_name
        FROM teacher_assignments ta
        JOIN class_combinations cc ON cc.id = ta.class_combination_id
        WHERE ta.id = $1 AND ta.teacher_id = $2`,
       [assignmentId, req.user.userId]
     );
     if (assignment.rows.length === 0) {
-      return res.status(404).json({ success: false, message: "That class/period isn't assigned to you." });
+      return res.status(404).json({ success: false, message: "That class isn't assigned to you." });
     }
-    const { class_combination_id, class_name, subject, period } = assignment.rows[0];
+    const { class_combination_id, class_name, subject } = assignment.rows[0];
 
     const students = await pool.query(
       `SELECT id, full_name, email, student_number, status
@@ -269,11 +280,373 @@ router.get("/students", async (req, res) => {
 
     res.json({
       success: true,
-      class: { id: class_combination_id, name: class_name, subject, period },
+      class: { id: class_combination_id, name: class_name, subject },
       students: students.rows,
     });
   } catch (error) {
     console.log("Error in GET /api/teacher/students:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==================================================================
+// NOTES
+// ==================================================================
+
+router.get("/notes", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT n.id, n.class_id AS "classCombinationId", cc.display_name AS "className",
+              n.subject, n.title, n.content, n.status,
+              n.file_url AS "fileUrl", n.file_type AS "fileType", n.file_name AS "fileName",
+              n.created_at AS "createdAt", n.updated_at AS "updatedAt"
+       FROM notes n
+       JOIN class_combinations cc ON cc.id = n.class_id
+       WHERE n.teacher_id = $1
+       ORDER BY n.updated_at DESC`,
+      [req.user.userId]
+    );
+    res.json({ success: true, notes: result.rows });
+  } catch (error) {
+    console.log("Error in GET /api/teacher/notes:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.post("/notes", async (req, res) => {
+  const {
+    classCombinationId,
+    subject,
+    title,
+    content,
+    status,
+    fileUrl,
+    fileType,
+    fileName,
+  } = req.body;
+
+  if (!classCombinationId || !subject || !subject.trim() || !title || !title.trim() || !content || !content.trim()) {
+    return res.status(400).json({ success: false, message: "Class, subject, title and content are all required." });
+  }
+  const noteStatus = status === "published" ? "published" : "draft";
+  if (fileType && !VALID_FILE_TYPES.includes(fileType)) {
+    return res.status(400).json({ success: false, message: "Invalid file type." });
+  }
+
+  try {
+    const allowed = await assertTeachesClassSubject(req.user.userId, classCombinationId, subject.trim());
+    if (!allowed) {
+      return res.status(403).json({ success: false, message: "You're not assigned to that class and subject." });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO notes
+        (teacher_id, class_id, subject, title, content, status, file_url, file_type, file_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id, class_id AS "classCombinationId", subject, title, content, status,
+                 file_url AS "fileUrl", file_type AS "fileType", file_name AS "fileName",
+                 created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [
+        req.user.userId,
+        classCombinationId,
+        subject.trim(),
+        title.trim(),
+        content.trim(),
+        noteStatus,
+        fileUrl || null,
+        fileType || null,
+        fileName || null,
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: noteStatus === "published" ? "Note saved and published to the class." : "Note saved as draft.",
+      note: result.rows[0],
+    });
+  } catch (error) {
+    console.log("Error in POST /api/teacher/notes:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.patch("/notes/:id", async (req, res) => {
+  const { title, content, status, fileUrl, fileType, fileName } = req.body;
+
+  if (status && !["draft", "published"].includes(status)) {
+    return res.status(400).json({ success: false, message: "Invalid status." });
+  }
+  if (fileType && !VALID_FILE_TYPES.includes(fileType)) {
+    return res.status(400).json({ success: false, message: "Invalid file type." });
+  }
+
+  try {
+    const owns = await pool.query(`SELECT id FROM notes WHERE id = $1 AND teacher_id = $2`, [req.params.id, req.user.userId]);
+    if (owns.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Note not found." });
+    }
+
+    const result = await pool.query(
+      `UPDATE notes SET
+        title = COALESCE($1, title),
+        content = COALESCE($2, content),
+        status = COALESCE($3, status),
+        file_url = COALESCE($4, file_url),
+        file_type = COALESCE($5, file_type),
+        file_name = COALESCE($6, file_name)
+       WHERE id = $7 AND teacher_id = $8
+       RETURNING id, class_id AS "classCombinationId", subject, title, content, status,
+                 file_url AS "fileUrl", file_type AS "fileType", file_name AS "fileName",
+                 created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [
+        title ? title.trim() : null,
+        content ? content.trim() : null,
+        status || null,
+        fileUrl || null,
+        fileType || null,
+        fileName || null,
+        req.params.id,
+        req.user.userId,
+      ]
+    );
+
+    const updated = result.rows[0];
+    let message = "Note updated.";
+    if (status === "published") message = "Note published to the class.";
+    else if (status === "draft") message = "Note moved back to drafts.";
+
+    res.json({ success: true, message, note: updated });
+  } catch (error) {
+    console.log("Error in PATCH /api/teacher/notes/:id:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.delete("/notes/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM notes WHERE id = $1 AND teacher_id = $2 RETURNING id`,
+      [req.params.id, req.user.userId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Note not found." });
+    }
+    res.json({ success: true, message: "Note deleted." });
+  } catch (error) {
+    console.log("Error in DELETE /api/teacher/notes/:id:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==================================================================
+// QUIZZES
+// ==================================================================
+
+router.get("/quizzes", async (req, res) => {
+  try {
+    const quizzes = await pool.query(
+      `SELECT q.id, q.class_id AS "classCombinationId", cc.display_name AS "className",
+              q.subject, q.title, q.time_limit_minutes AS "timeLimitMinutes", q.status,
+              q.starts_at AS "startsAt", q.ends_at AS "endsAt", q.created_at AS "createdAt"
+       FROM quizzes q
+       JOIN class_combinations cc ON cc.id = q.class_id
+       WHERE q.teacher_id = $1
+       ORDER BY q.created_at DESC`,
+      [req.user.userId]
+    );
+
+    if (quizzes.rows.length === 0) {
+      return res.json({ success: true, quizzes: [] });
+    }
+
+    const quizIds = quizzes.rows.map((q) => q.id);
+    const questions = await pool.query(
+      `SELECT qq.id, qq.quiz_id AS "quizId", qq.order_index AS "orderIndex", qq.question,
+              qo.id AS "optionId", qo.option_text AS "optionText", qo.is_correct AS "isCorrect"
+       FROM quiz_questions qq
+       LEFT JOIN quiz_options qo ON qo.question_id = qq.id
+       WHERE qq.quiz_id = ANY($1)
+       ORDER BY qq.quiz_id, qq.order_index ASC, qo.id ASC`,
+      [quizIds]
+    );
+
+    const questionsByQuiz = new Map();
+    for (const row of questions.rows) {
+      if (!questionsByQuiz.has(row.quizId)) questionsByQuiz.set(row.quizId, new Map());
+      const qMap = questionsByQuiz.get(row.quizId);
+      if (!qMap.has(row.id)) {
+        qMap.set(row.id, { id: row.id, orderIndex: row.orderIndex, question: row.question, options: [] });
+      }
+      if (row.optionId) {
+        qMap.get(row.id).options.push({ id: row.optionId, optionText: row.optionText, isCorrect: row.isCorrect });
+      }
+    }
+
+    const result = quizzes.rows.map((q) => ({
+      ...q,
+      questions: [...(questionsByQuiz.get(q.id) || new Map()).values()],
+    }));
+
+    res.json({ success: true, quizzes: result });
+  } catch (error) {
+    console.log("Error in GET /api/teacher/quizzes:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.post("/quizzes", async (req, res) => {
+  const {
+    classCombinationId,
+    subject,
+    title,
+    timeLimitMinutes,
+    status,
+    startsAt,
+    endsAt,
+    questions,
+  } = req.body;
+
+  if (!classCombinationId || !subject || !subject.trim() || !title || !title.trim()) {
+    return res.status(400).json({ success: false, message: "Class, subject and title are required." });
+  }
+  const quizStatus = ["draft", "published", "closed"].includes(status) ? status : "draft";
+
+  const client = await pool.connect();
+  try {
+    const allowed = await assertTeachesClassSubject(req.user.userId, classCombinationId, subject.trim());
+    if (!allowed) {
+      client.release();
+      return res.status(403).json({ success: false, message: "You're not assigned to that class and subject." });
+    }
+
+    await client.query("BEGIN");
+
+    const quizResult = await client.query(
+      `INSERT INTO quizzes
+        (teacher_id, class_id, subject, title, time_limit_minutes, status, starts_at, ends_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, class_id AS "classCombinationId", subject, title,
+                 time_limit_minutes AS "timeLimitMinutes", status,
+                 starts_at AS "startsAt", ends_at AS "endsAt", created_at AS "createdAt"`,
+      [
+        req.user.userId,
+        classCombinationId,
+        subject.trim(),
+        title.trim(),
+        timeLimitMinutes || null,
+        quizStatus,
+        startsAt || null,
+        endsAt || null,
+      ]
+    );
+    const quiz = quizResult.rows[0];
+    const builtQuestions = [];
+
+    if (Array.isArray(questions)) {
+      let orderIndex = 0;
+      for (const q of questions) {
+        if (!q || !q.question || !q.question.trim()) continue;
+        const questionResult = await client.query(
+          `INSERT INTO quiz_questions (quiz_id, order_index, question)
+           VALUES ($1, $2, $3)
+           RETURNING id, order_index AS "orderIndex", question`,
+          [quiz.id, orderIndex, q.question.trim()]
+        );
+        const savedQuestion = questionResult.rows[0];
+        const savedOptions = [];
+
+        if (Array.isArray(q.options)) {
+          for (const o of q.options) {
+            if (!o || !o.optionText || !o.optionText.trim()) continue;
+            const optionResult = await client.query(
+              `INSERT INTO quiz_options (question_id, option_text, is_correct)
+               VALUES ($1, $2, $3)
+               RETURNING id, option_text AS "optionText", is_correct AS "isCorrect"`,
+              [savedQuestion.id, o.optionText.trim(), Boolean(o.isCorrect)]
+            );
+            savedOptions.push(optionResult.rows[0]);
+          }
+        }
+
+        builtQuestions.push({ ...savedQuestion, options: savedOptions });
+        orderIndex += 1;
+      }
+    }
+
+    await client.query("COMMIT");
+    res.json({
+      success: true,
+      message: quizStatus === "published" ? "Quiz saved and published to the class." : "Quiz saved as draft.",
+      quiz: { ...quiz, questions: builtQuestions },
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.log("Error in POST /api/teacher/quizzes:", error);
+    res.status(500).json({ success: false, message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+router.patch("/quizzes/:id", async (req, res) => {
+  const { title, timeLimitMinutes, status, startsAt, endsAt } = req.body;
+
+  if (status && !["draft", "published", "closed"].includes(status)) {
+    return res.status(400).json({ success: false, message: "Invalid status." });
+  }
+
+  try {
+    const owns = await pool.query(`SELECT id FROM quizzes WHERE id = $1 AND teacher_id = $2`, [req.params.id, req.user.userId]);
+    if (owns.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Quiz not found." });
+    }
+
+    const result = await pool.query(
+      `UPDATE quizzes SET
+        title = COALESCE($1, title),
+        time_limit_minutes = COALESCE($2, time_limit_minutes),
+        status = COALESCE($3, status),
+        starts_at = COALESCE($4, starts_at),
+        ends_at = COALESCE($5, ends_at)
+       WHERE id = $6 AND teacher_id = $7
+       RETURNING id, class_id AS "classCombinationId", subject, title,
+                 time_limit_minutes AS "timeLimitMinutes", status,
+                 starts_at AS "startsAt", ends_at AS "endsAt", created_at AS "createdAt"`,
+      [
+        title ? title.trim() : null,
+        timeLimitMinutes || null,
+        status || null,
+        startsAt || null,
+        endsAt || null,
+        req.params.id,
+        req.user.userId,
+      ]
+    );
+
+    let message = "Quiz updated.";
+    if (status === "published") message = "Quiz published to the class.";
+    else if (status === "draft") message = "Quiz moved back to drafts.";
+    else if (status === "closed") message = "Quiz closed.";
+
+    res.json({ success: true, message, quiz: result.rows[0] });
+  } catch (error) {
+    console.log("Error in PATCH /api/teacher/quizzes/:id:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.delete("/quizzes/:id", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM quizzes WHERE id = $1 AND teacher_id = $2 RETURNING id`,
+      [req.params.id, req.user.userId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Quiz not found." });
+    }
+    res.json({ success: true, message: "Quiz deleted." });
+  } catch (error) {
+    console.log("Error in DELETE /api/teacher/quizzes/:id:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });

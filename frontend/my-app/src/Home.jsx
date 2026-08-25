@@ -80,6 +80,18 @@ const DEFAULT_SCHOOL_CODE = '1234';
 // Icons cycled through in the featured partners ad carousel (replaces the old image slideshow).
 const AD_CIRCLE_ICONS = [Star, Trophy, Handshake];
 
+// Every subject a teacher can pick from when choosing what they teach —
+// shared between the teacher's own "add class" step below AND the school
+// admin's approval modal, so the two lists never drift apart. A teacher (or
+// admin) can always add something custom too if it's missing here.
+const SUBJECT_OPTIONS = [
+  'Mathematics', 'English', 'Kinyarwanda', 'French', 'Physics', 'Chemistry',
+  'Biology', 'Geography', 'History', 'Economics', 'Entrepreneurship',
+  'Computer Science / ICT', 'General Studies',
+  'Religion & Values Education', 'Physical Education', 'Fine Art',
+  'Literature in English', 'Kiswahili',
+];
+
 // Every sign-in role the system supports, each with its own system icon (lucide-react,
 // no image import needed) and its own rules: who can self-register, and how they
 // authenticate.
@@ -90,9 +102,9 @@ const AD_CIRCLE_ICONS = [Star, Trophy, Handshake];
 //     which creates them "pending" until the school admin approves them.
 //     For teachers specifically, sign-in doesn't stop there: see
 //     handleLoginSubmit / startTeacherClassStep below — an approved teacher
-//     also has to choose (or confirm) a class, subject and period before
-//     landing on the dashboard, because the school admin never picks one
-//     for them.
+//     also has to choose (or confirm) which classes and subjects they teach
+//     before landing on the dashboard, unless the school admin already
+//     picked some for them at approval time.
 //   - schoolAdmin -> email + school code, then an emailed confirmation code.
 //     The backend refuses to even send that code until a super admin has
 //     approved the school (see home.js) — so nothing here can bypass that gate.
@@ -288,7 +300,7 @@ function AuthModal({
               //   - student login: onSubmitLogin calls POST /api/users/login-google.
               //   - teacher login: onSubmitLogin calls the same endpoint, then — if it
               //     succeeds — the parent component takes over and walks the teacher
-              //     through choosing/confirming a class, subject and period before it
+              //     through choosing/confirming their classes and subjects before it
               //     navigates anywhere (see startTeacherClassStep).
               //   - superAdmin: onSubmitLogin checks the Google email against the
               //     allowlist client-side, then transparently obtains a backend
@@ -380,8 +392,9 @@ function AuthModal({
             // school + school code, then submit. onSubmitRegister posts to
             // POST /api/users/register-google, which creates the account as
             // "pending" until the school admin approves it. For teachers,
-            // approval still never attaches a class/subject/period — that
-            // only happens the first time they sign back in (see below).
+            // approval may or may not attach classes/subjects (the admin
+            // decides) — anything still missing gets picked by the teacher
+            // themself the first time they sign back in (see below).
             <form onSubmit={onSubmitRegister} className="flex flex-col gap-3">
               <div>
                 <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Your Google account</label>
@@ -643,18 +656,27 @@ function AdminOtpModal({ email, otpValue, setOtpValue, verifying, sending, error
 }
 
 // ------------------------------------------------------------------
-// Teacher class/subject/period step — shown right after a teacher's Google
-// sign-in succeeds, BEFORE anything navigates to the dashboard. This is the
-// piece that makes "teacher picks class + period at login" real:
+// Teacher classes/subjects step — shown right after a teacher's Google
+// sign-in succeeds, BEFORE anything navigates to the dashboard. Teachers
+// now pick MULTIPLE classes and MULTIPLE subjects at once via checkboxes
+// (including "select all"), instead of one class/subject/period at a time:
 //   - mode 'pick': the teacher already has one or more assignments — list
-//     them so they can pick which one they're signing in for right now, or
-//     add a new one.
-//   - mode 'add': the teacher has none yet (or chose to add another) — pick
-//     a class from their own school (GET /api/teacher/classes) and type in
-//     a subject + period, which POSTs to /api/teacher/assignments.
+//     the classes they're already linked to so they can jump straight in,
+//     or add more.
+//   - mode 'add': the teacher has none yet (or chose to add more) — tick
+//     any number of classes from their own school (GET /api/teacher/classes)
+//     and any number of subjects, which POSTs every class × subject
+//     combination in one call to /api/teacher/assignments.
 // ------------------------------------------------------------------
-function TeacherClassStepModal({ step, setStep, onPickExisting, onSwitchToAdd, onBackToPick, onSubmitAdd, onClose }) {
+function TeacherClassStepModal({
+  step, setStep, onPickExisting, onSwitchToAdd, onBackToPick, onSubmitAdd, onClose,
+  onToggleClass, onToggleAllClasses, onToggleSubject, onToggleAllSubjects, onAddCustomSubject,
+}) {
   const { mode, assignments, classes, classesLoading, form, submitting, error } = step;
+  const allSubjectChoices = [...new Set([...SUBJECT_OPTIONS, ...form.subjects])];
+  const allClassesSelected = classes.length > 0 && classes.every((c) => form.classIds.has(c.id));
+  const allSubjectsSelected = allSubjectChoices.length > 0 && allSubjectChoices.every((s) => form.subjects.has(s));
+  const comboCount = form.classIds.size * form.subjects.size;
 
   return (
     <div
@@ -671,7 +693,7 @@ function TeacherClassStepModal({ step, setStep, onPickExisting, onSwitchToAdd, o
           <div className="flex-1 min-w-0">
             <p className="text-[10px] font-bold uppercase tracking-wide text-green-700">Teacher sign-in</p>
             <h3 className="ecw-heading text-base font-extrabold text-neutral-900 mt-0.5 truncate">
-              {mode === 'pick' ? 'Which class & period?' : 'Choose a class, subject & period'}
+              {mode === 'pick' ? 'Your classes' : 'Which classes & subjects?'}
             </h3>
           </div>
           <button
@@ -694,75 +716,108 @@ function TeacherClassStepModal({ step, setStep, onPickExisting, onSwitchToAdd, o
           {mode === 'pick' ? (
             <div className="flex flex-col gap-3">
               <p className="text-[11px] text-neutral-500 -mt-1">
-                Pick the class and period you're signing in for. You can switch again next time you sign in.
+                These are the classes and subjects your school has you down for. Continue to your
+                dashboard, or add more if something's missing.
               </p>
               <div className="flex flex-col gap-2">
                 {assignments.map((a) => (
-                  <button
-                    key={a.id}
-                    type="button"
-                    onClick={() => onPickExisting(a)}
-                    className="w-full text-left flex items-center justify-between gap-3 rounded-lg border border-neutral-200 hover:border-[#178754] hover:bg-[#EAF6EF] px-3.5 py-2.5 transition-colors"
-                  >
+                  <div key={a.id} className="w-full flex items-center justify-between gap-3 rounded-lg border border-neutral-200 px-3.5 py-2.5">
                     <span>
                       <span className="block text-xs font-bold text-neutral-800">{a.className}</span>
-                      <span className="block text-[11px] text-neutral-500">{a.subject} · {a.period}</span>
+                      <span className="block text-[11px] text-neutral-500">{a.subject}</span>
                     </span>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-[#178754] shrink-0">
-                      <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </button>
+                  </div>
                 ))}
               </div>
+              <button
+                type="button"
+                onClick={() => onPickExisting(assignments)}
+                className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)]"
+              >
+                Continue to dashboard
+              </button>
               <button type="button" onClick={onSwitchToAdd} className="text-center text-[11px] font-bold text-[#178754] hover:underline mt-1">
-                + Teach a different class or period
+                + Add another class or subject
               </button>
             </div>
           ) : (
-            <form onSubmit={onSubmitAdd} className="flex flex-col gap-3">
+            <div className="flex flex-col gap-4">
+              <p className="text-[11px] text-neutral-500 -mt-1">
+                Tick every class you teach, and every subject you teach — we'll link you to each
+                class/subject pair. You can always add more later at sign-in.
+              </p>
+
               <div>
-                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Class</label>
-                <select
-                  required
-                  value={form.classId}
-                  onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, classId: e.target.value } } : s))}
-                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 bg-white focus:outline-none focus:border-green-400"
-                >
-                  <option value="">{classesLoading ? 'Loading classes…' : 'Select a class'}</option>
-                  {classes.map((c) => (
-                    <option key={c.id} value={c.id}>{c.display_name}</option>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-bold text-neutral-600">Classes you teach</label>
+                  <button type="button" onClick={onToggleAllClasses} className="text-[10px] font-bold text-[#178754] hover:underline">
+                    {allClassesSelected ? 'Clear all' : 'Select all'}
+                  </button>
+                </div>
+                <div className="max-h-36 overflow-y-auto border border-neutral-200 rounded-lg p-2.5 flex flex-col gap-1.5">
+                  {classesLoading ? (
+                    <p className="text-[11px] text-neutral-400 px-1 py-1">Loading classes…</p>
+                  ) : classes.length === 0 ? (
+                    <p className="text-[11px] text-neutral-400 px-1 py-1">Your school hasn't added any classes yet.</p>
+                  ) : classes.map((c) => (
+                    <label key={c.id} className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={form.classIds.has(c.id)}
+                        onChange={() => onToggleClass(c.id)}
+                        className="w-3.5 h-3.5 accent-[#178754] shrink-0"
+                      />
+                      {c.display_name}
+                    </label>
                   ))}
-                </select>
+                </div>
               </div>
+
               <div>
-                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Subject</label>
-                <input
-                  type="text"
-                  required
-                  value={form.subject}
-                  onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, subject: e.target.value } } : s))}
-                  placeholder="e.g. Chemistry"
-                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Period</label>
-                <input
-                  type="text"
-                  required
-                  value={form.period}
-                  onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, period: e.target.value } } : s))}
-                  placeholder="e.g. Period 3, or Mon 08:00–08:40"
-                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-                />
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[11px] font-bold text-neutral-600">Subjects you teach</label>
+                  <button type="button" onClick={onToggleAllSubjects} className="text-[10px] font-bold text-[#178754] hover:underline">
+                    {allSubjectsSelected ? 'Clear all' : 'Select all'}
+                  </button>
+                </div>
+                <div className="max-h-36 overflow-y-auto border border-neutral-200 rounded-lg p-2.5 flex flex-col gap-1.5">
+                  {allSubjectChoices.map((s) => (
+                    <label key={s} className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={form.subjects.has(s)}
+                        onChange={() => onToggleSubject(s)}
+                        className="w-3.5 h-3.5 accent-[#178754] shrink-0"
+                      />
+                      {s}
+                    </label>
+                  ))}
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <input
+                    value={form.customSubject}
+                    onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, customSubject: e.target.value } } : s))}
+                    placeholder="Other subject not listed"
+                    className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onAddCustomSubject(); } }}
+                  />
+                  <button type="button" onClick={onAddCustomSubject} className="text-[11px] font-bold text-[#178754] hover:underline shrink-0">
+                    Add
+                  </button>
+                </div>
               </div>
 
               <button
-                type="submit"
-                disabled={submitting}
-                className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
+                type="button"
+                disabled={submitting || form.classIds.size === 0 || form.subjects.size === 0}
+                onClick={onSubmitAdd}
+                className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {submitting ? 'Saving…' : 'Continue to dashboard'}
+                {submitting
+                  ? 'Saving…'
+                  : comboCount > 0
+                    ? `Save ${comboCount} assignment${comboCount === 1 ? '' : 's'} & continue`
+                    : 'Pick at least one class and subject'}
               </button>
 
               {assignments.length > 0 && (
@@ -770,7 +825,7 @@ function TeacherClassStepModal({ step, setStep, onPickExisting, onSwitchToAdd, o
                   Back to my classes
                 </button>
               )}
-            </form>
+            </div>
           )}
         </div>
       </div>
@@ -838,14 +893,14 @@ export default function EasyClassWork() {
   const [otpVerifying, setOtpVerifying] = useState(false);
   const [otpError, setOtpError] = useState('');
 
-  // Teacher class/subject/period step — opened right after a teacher's Google
+  // Teacher classes/subjects step — opened right after a teacher's Google
   // login succeeds. Shape:
   //   {
   //     token, user,               // from login-google's response
   //     mode: 'pick' | 'add',
   //     assignments,                // existing assignments returned at login
   //     classes, classesLoading,    // this school's classes, for 'add' mode
-  //     form: { classId, subject, period },
+  //     form: { classIds: Set, subjects: Set, customSubject },
   //     submitting, error,
   //   }
   const [teacherStep, setTeacherStep] = useState(null);
@@ -936,12 +991,12 @@ export default function EasyClassWork() {
   };
 
   // ------------------------------------------------------------------
-  // Teacher class/subject/period step — helpers
+  // Teacher classes/subjects step — helpers
   // ------------------------------------------------------------------
 
-  // Loads the classes this teacher's school has created, for the "add a
-  // class" form. Called lazily (only when the teacher actually needs to
-  // pick one), never before.
+  // Loads the classes this teacher's school has created, for the "add
+  // classes" form. Called lazily (only when the teacher actually needs to
+  // pick some), never before.
   const loadTeacherClasses = async (token) => {
     try {
       const response = await fetch(`${API_BASE}/api/teacher/classes`, {
@@ -959,55 +1014,55 @@ export default function EasyClassWork() {
     }
   };
 
+  const blankAddForm = () => ({ classIds: new Set(), subjects: new Set(), customSubject: '' });
+
   // Decides what the teacher sees right after a successful Google login:
-  // straight through if they only have one class/period, a picker if they
-  // have several, or the "add one" form if they have none yet.
+  // the picker/summary if they already have at least one assignment (from
+  // either the admin or a previous sign-in), or the "add some" form if they
+  // have none yet.
   const startTeacherClassStep = (token, user, assignments) => {
     if (assignments.length === 0) {
       setTeacherStep({
         token, user, mode: 'add', assignments,
         classes: [], classesLoading: true,
-        form: { classId: '', subject: '', period: '' },
+        form: blankAddForm(),
         submitting: false, error: '',
       });
       loadTeacherClasses(token);
-    } else if (assignments.length === 1) {
-      completeTeacherLogin(token, user, assignments[0]);
     } else {
       setTeacherStep({
         token, user, mode: 'pick', assignments,
         classes: [], classesLoading: false,
-        form: { classId: '', subject: '', period: '' },
+        form: blankAddForm(),
         submitting: false, error: '',
       });
     }
   };
 
-  // Finishes the teacher sign-in with a specific class/subject/period
-  // attached, then navigates to the dashboard exactly like every other role.
-  const completeTeacherLogin = (token, user, assignment) => {
+  // Finishes the teacher sign-in with whatever assignments they currently
+  // have, then navigates to the dashboard exactly like every other role.
+  const completeTeacherLogin = (token, user, assignments) => {
     setTeacherStep(null);
     handleNavigate('/dashboard/teacher', {
       token,
       email: user.email,
       name: user.fullName,
-      assignment: {
-        id: assignment.id,
-        classId: assignment.classCombinationId,
-        className: assignment.className,
-        subject: assignment.subject,
-        period: assignment.period,
-      },
+      assignments: assignments.map((a) => ({
+        id: a.id,
+        classId: a.classCombinationId,
+        className: a.className,
+        subject: a.subject,
+      })),
     });
   };
 
-  const handlePickExistingAssignment = (assignment) => {
+  const handlePickExisting = (assignments) => {
     if (!teacherStep) return;
-    completeTeacherLogin(teacherStep.token, teacherStep.user, assignment);
+    completeTeacherLogin(teacherStep.token, teacherStep.user, assignments);
   };
 
   const handleSwitchTeacherStepToAdd = () => {
-    setTeacherStep((s) => (s ? { ...s, mode: 'add', error: '' } : s));
+    setTeacherStep((s) => (s ? { ...s, mode: 'add', error: '', form: blankAddForm() } : s));
     if (teacherStep && teacherStep.classes.length === 0) loadTeacherClasses(teacherStep.token);
   };
 
@@ -1015,26 +1070,78 @@ export default function EasyClassWork() {
     setTeacherStep((s) => (s ? { ...s, mode: 'pick', error: '' } : s));
   };
 
+  const handleToggleClass = (classId) => {
+    setTeacherStep((s) => {
+      if (!s) return s;
+      const next = new Set(s.form.classIds);
+      next.has(classId) ? next.delete(classId) : next.add(classId);
+      return { ...s, form: { ...s.form, classIds: next } };
+    });
+  };
+
+  const handleToggleAllClasses = () => {
+    setTeacherStep((s) => {
+      if (!s) return s;
+      const allSelected = s.classes.length > 0 && s.classes.every((c) => s.form.classIds.has(c.id));
+      const next = allSelected ? new Set() : new Set(s.classes.map((c) => c.id));
+      return { ...s, form: { ...s.form, classIds: next } };
+    });
+  };
+
+  const handleToggleSubject = (subject) => {
+    setTeacherStep((s) => {
+      if (!s) return s;
+      const next = new Set(s.form.subjects);
+      next.has(subject) ? next.delete(subject) : next.add(subject);
+      return { ...s, form: { ...s.form, subjects: next } };
+    });
+  };
+
+  const handleToggleAllSubjects = () => {
+    setTeacherStep((s) => {
+      if (!s) return s;
+      const allChoices = [...new Set([...SUBJECT_OPTIONS, ...s.form.subjects])];
+      const allSelected = allChoices.length > 0 && allChoices.every((sub) => s.form.subjects.has(sub));
+      const next = allSelected ? new Set() : new Set(allChoices);
+      return { ...s, form: { ...s.form, subjects: next } };
+    });
+  };
+
+  const handleAddCustomSubject = () => {
+    setTeacherStep((s) => {
+      if (!s) return s;
+      const label = s.form.customSubject.trim();
+      if (!label) return s;
+      const next = new Set(s.form.subjects);
+      next.add(label);
+      return { ...s, form: { ...s.form, subjects: next, customSubject: '' } };
+    });
+  };
+
   const handleSubmitNewAssignment = async (e) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
     if (!teacherStep) return;
-    const { classId, subject, period } = teacherStep.form;
-    if (!classId || !subject.trim() || !period.trim()) {
-      setTeacherStep((s) => (s ? { ...s, error: 'Please fill in every field.' } : s));
+    const { classIds, subjects } = teacherStep.form;
+    if (classIds.size === 0 || subjects.size === 0) {
+      setTeacherStep((s) => (s ? { ...s, error: 'Pick at least one class and one subject.' } : s));
       return;
     }
+    const assignments = [...classIds].flatMap((classCombinationId) =>
+      [...subjects].map((subject) => ({ classCombinationId, subject }))
+    );
+
     setTeacherStep((s) => (s ? { ...s, submitting: true, error: '' } : s));
     try {
       const response = await fetch(`${API_BASE}/api/teacher/assignments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${teacherStep.token}` },
-        body: JSON.stringify({ classCombinationId: classId, subject, period }),
+        body: JSON.stringify({ assignments }),
       });
       const result = await response.json();
       if (response.ok && result.success) {
-        completeTeacherLogin(teacherStep.token, teacherStep.user, result.assignment);
+        completeTeacherLogin(teacherStep.token, teacherStep.user, result.assignments);
       } else {
-        setTeacherStep((s) => (s ? { ...s, submitting: false, error: result.message || 'Could not save that class.' } : s));
+        setTeacherStep((s) => (s ? { ...s, submitting: false, error: result.message || 'Could not save that.' } : s));
       }
     } catch (err) {
       console.error(err);
@@ -1100,10 +1207,10 @@ export default function EasyClassWork() {
       // POST /api/users/login-google matches by google_sub + role, and only
       // succeeds if the account exists AND has been approved by the school
       // admin. Anything else comes back as an error we show inline. For a
-      // teacher, a successful response also carries `assignments` — the
-      // class(es)/subject(s)/period(s) they've already picked for
-      // themself, if any — which decides what startTeacherClassStep shows
-      // next, instead of navigating straight to the dashboard.
+      // teacher, a successful response also carries `assignments` — every
+      // class/subject pair they've already been given (by the admin at
+      // approval time, or by picking it themself before) — which decides
+      // what startTeacherClassStep shows next.
       setAuthSubmitting(true);
       try {
         const response = await fetch(`${API_BASE}/api/users/login-google`, {
@@ -1245,9 +1352,9 @@ export default function EasyClassWork() {
       // POST /api/users/register-google creates a `users` row with
       // status = 'pending_approval'. The school admin then approves it from
       // their dashboard (School_Admin.jsx) before this person can sign in.
-      // For teachers, approving never attaches a class/subject/period —
-      // that only happens the first time they successfully sign back in
-      // (see startTeacherClassStep above).
+      // For teachers, the admin may attach classes/subjects at approval
+      // time, or approve with none — anything still missing gets picked by
+      // the teacher themself at their first sign-in (see startTeacherClassStep above).
       setAuthSubmitting(true);
       try {
         const response = await fetch(`${API_BASE}/api/users/register-google`, {
@@ -1379,17 +1486,22 @@ export default function EasyClassWork() {
         />
       )}
 
-      {/* Teacher class/subject/period picker — shown right after a teacher's
+      {/* Teacher classes/subjects picker — shown right after a teacher's
           Google login succeeds, before anything navigates to the dashboard. */}
       {teacherStep && (
         <TeacherClassStepModal
           step={teacherStep}
           setStep={setTeacherStep}
-          onPickExisting={handlePickExistingAssignment}
+          onPickExisting={handlePickExisting}
           onSwitchToAdd={handleSwitchTeacherStepToAdd}
           onBackToPick={handleBackToPickAssignment}
           onSubmitAdd={handleSubmitNewAssignment}
           onClose={closeTeacherStep}
+          onToggleClass={handleToggleClass}
+          onToggleAllClasses={handleToggleAllClasses}
+          onToggleSubject={handleToggleSubject}
+          onToggleAllSubjects={handleToggleAllSubjects}
+          onAddCustomSubject={handleAddCustomSubject}
         />
       )}
     <div className={`min-h-screen bg-white text-neutral-900 font-sans antialiased ${isOverlayActive ? 'ecw-blur-active' : ''}`}>
@@ -1928,7 +2040,7 @@ export default function EasyClassWork() {
                 {i:1, title:'Register your school', text:'Verify your email with Google, submit your school details, and pay the term fee by MTN, Airtel or bank.'},
                 {i:2, title:'Wait for approval', text:'Our team confirms your school is real before its admin account is switched on.'},
                 {i:3, title:'Get your school code', text:'Once approved, your school can sign in as admin and share its code with staff and students.'},
-                {i:4, title:'Add staff and students', text:'Teachers and students sign up with Google using your school code, and the admin approves each one — teachers still choose their own class, subject and period the first time they sign in.'},
+                {i:4, title:'Add staff and students', text:'Teachers and students sign up with Google using your school code, and the admin approves each one — optionally attaching classes and subjects right away, or leaving teachers to pick their own at first sign-in.'},
                 {i:5, title:'Publish notes and quizzes', text:'Teachers start uploading materials the same day.'},
                 {i:6, title:'Track progress', text:'Watch attendance, grades and quiz results as the term goes on.'},
               ].map(step => (
@@ -1962,9 +2074,9 @@ export default function EasyClassWork() {
             <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Register</span>
             <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">Choose your dashboard</h2>
             <p className="ecw-body text-xs text-neutral-600 mt-2">
-              Students and teachers verify their email and sign in with Google — teachers also choose a class,
-              subject and period the first time they sign in. School admins sign in with their school email and
-              code — once their school has been approved.
+              Students and teachers verify their email and sign in with Google — teachers also pick every
+              class and subject they teach (or confirm what their admin already set up) at sign-in. School
+              admins sign in with their school email and code — once their school has been approved.
             </p>
           </div>
 
@@ -1988,7 +2100,7 @@ export default function EasyClassWork() {
                 <ROLE_CONFIG.teacher.icon className="w-5 h-5 text-[#1D6FE0]" aria-hidden="true" />
               </span>
               <h3 className="ecw-heading font-bold text-sm text-neutral-900 mb-1">Teacher dashboard</h3>
-              <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">Upload lesson materials, grade work and record attendance — choose your class, subject and period when you sign in with Google.</p>
+              <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">Upload lesson materials, grade work and record attendance — choose every class and subject you teach when you sign in with Google.</p>
               <button
                 type="button"
                 onClick={() => openAuth('teacher', 'login')}

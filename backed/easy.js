@@ -82,9 +82,10 @@ app.use("/api/auth/school-admin", schoolAdminAuth.router);
 app.use("/api/school-admin", schoolAdminRoutes.router);
 
 // Everything under /api/teacher/* is what the signed-in teacher dashboard
-// calls: their own classes, their own class+subject+period assignments,
-// and the approved students inside whichever class/period they've
-// selected — handled by teacher.js.
+// calls: their own classes, their own class+subject assignments (multiple
+// classes, multiple subjects — no "period" concept anymore, see teacher.js),
+// and the approved students inside whichever class they've selected —
+// handled by teacher.js.
 app.use("/api/teacher", teacherRoutes.router);
 
 // ------------------------------------------------------------------
@@ -821,9 +822,11 @@ app.post("/api/users/register-google", async (req, res) => {
     }
 
     // NOTE: teachers are inserted exactly like students — 'pending_approval'
-    // status, no class/subject/period. Approving a teacher (schoolAdmin.js)
-    // never writes one either. A teacher only ever gets a class + subject +
-    // period by picking it themself, at sign-in time (see teacher.js).
+    // status, no class/subject attached yet. Approving a teacher
+    // (schoolAdmin.js) MAY attach one or more classes/subjects right there
+    // if the admin picked any, or it may attach none — either way, the
+    // teacher can always pick more themself at sign-in time (see teacher.js
+    // and Home.jsx's TeacherClassStepModal).
     await pool.query(
       `INSERT INTO users
        (
@@ -957,21 +960,25 @@ app.post("/api/users/login-google", async (req, res) => {
       schoolId: user.school_id,
     });
 
-    // Teachers pick their own class + subject + period AFTER being
-    // approved (see teacher.js's POST /api/teacher/assignments) — hand
-    // back whatever they've already picked so Home.jsx knows whether to
-    // ask for a brand-new one, sign them straight into their only one, or
-    // let them choose among several.
+    // Teachers can end up with ZERO, ONE, or MANY class+subject pairs —
+    // whatever the school admin attached at approval time, plus whatever
+    // the teacher has picked themself on previous sign-ins (see
+    // teacher.js's POST /api/teacher/assignments). NOTE: there is no
+    // "period" column on teacher_assignments — selecting ta.period here
+    // was the exact bug that crashed every teacher login with a Postgres
+    // "column ta.period does not exist" error. Hand back every
+    // classCombinationId/subject pair so Home.jsx's TeacherClassStepModal
+    // knows whether to ask for more, or let the teacher straight in.
     let assignments;
 
     if (role === "teacher") {
       const assignmentsResult = await pool.query(
-        `SELECT ta.id, ta.subject, ta.period, ta.class_combination_id AS "classCombinationId",
+        `SELECT ta.id, ta.subject, ta.class_combination_id AS "classCombinationId",
                 cc.display_name AS "className"
          FROM teacher_assignments ta
          JOIN class_combinations cc ON cc.id = ta.class_combination_id
          WHERE ta.teacher_id = $1
-         ORDER BY cc.display_name ASC, ta.period ASC`,
+         ORDER BY cc.display_name ASC, ta.subject ASC`,
         [user.id]
       );
 
