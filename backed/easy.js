@@ -39,6 +39,17 @@ const schoolAdminRoutes = require("./schoolAdmin");
 const teacherRoutes = require("./teacher");
 const { createUserSession } = teacherRoutes;
 
+// FIX (root cause of "No route for GET /api/student/me"): student.js
+// defines a fully working router (GET /me, /notes, /quizzes, quiz
+// start/answer/away/submit/result) but it was never require()'d or
+// app.use()'d anywhere in this file, so every /api/student/* request
+// fell straight through to the 404 JSON handler at the bottom of this
+// file. student.js itself needed no changes — it already imports
+// requireUserSession from teacher.js and reuses the same session store,
+// so a token issued at POST /api/users/login-google works immediately
+// once the router is actually mounted below.
+const studentRoutes = require("./student");
+
 const app = express();
 
 // ------------------------------------------------------------------
@@ -87,6 +98,14 @@ app.use("/api/school-admin", schoolAdminRoutes.router);
 // and the approved students inside whichever class they've selected —
 // handled by teacher.js.
 app.use("/api/teacher", teacherRoutes.router);
+
+// Everything under /api/student/* is what the signed-in student dashboard
+// (Students.jsx) calls: their profile, their class's published notes,
+// their quizzes (list, start, autosave answers, tab-away penalty,
+// submit, review) — handled by student.js. THIS LINE WAS MISSING, which
+// is why every /api/student/* call (starting with GET /api/student/me on
+// page load) 404'd with "No route for GET /api/student/me".
+app.use("/api/student", studentRoutes.router);
 
 // ------------------------------------------------------------------
 // EMAIL SETUP — NODEMAILER + GMAIL APP PASSWORD
@@ -891,8 +910,8 @@ app.post("/api/users/register-google", async (req, res) => {
 // ------------------------------------------------------------------
 // Session creation now comes from teacher.js's shared createUserSession
 // (imported at the top of this file) so a token minted here is valid on
-// every /api/teacher/* route — see the big comment at the top of
-// teacher.js for why that matters.
+// every /api/teacher/* route AND every /api/student/* route — see the
+// big comment at the top of teacher.js for why that matters.
 
 app.post("/api/users/login-google", async (req, res) => {
   const {

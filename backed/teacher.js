@@ -37,6 +37,11 @@
 //   - quiz_options only supports multiple-choice grading (is_correct
 //     boolean) — there is no "written / manually graded" question type in
 //     this schema.
+//   - quiz_attempts / quiz_attempt_answers (used by student.js) must have
+//     every column listed in migration_fix_quiz_attempts.sql — if you ever
+//     see "column a.status does not exist" (or any other missing-column
+//     error touching quiz_attempts), run that migration file against your
+//     database. It's safe to run more than once.
 //
 // Every note/quiz create is checked against teacher_assignments so a
 // teacher can only save into a class+subject they actually teach — never
@@ -48,6 +53,22 @@
 // SESSIONS — this file OWNS the shared user-session store (userSessions /
 // createUserSession / requireUserSession, all exported below). easy.js's
 // POST /api/users/login-google calls THIS file's createUserSession().
+//
+// SESSION LIFETIME (updated): sessions used to hard-expire exactly
+// USER_SESSION_TTL_MS after login, which logged people out mid-use even
+// while they were actively working. requireUserSession() now REFRESHES
+// expiresAt on every authenticated request ("sliding window"), so in
+// practice a session lasts as long as the teacher/student keeps using the
+// app, and only truly expires after USER_SESSION_TTL_MS of total
+// inactivity. The only other way a session ends is the frontend's explicit
+// Sign Out button, which just clears the token from localStorage.
+//
+// CAVEAT: userSessions is an in-memory Map. Restarting the Node process
+// (e.g. `node easy.js` again after a crash or a deploy) wipes every active
+// session — everyone has to sign in again. If you need sessions to survive
+// server restarts, move this Map into Postgres or Redis; that's a bigger
+// change and out of scope here, but worth doing before this goes to real
+// production traffic.
 
 const express = require("express");
 const crypto = require("crypto");
@@ -55,7 +76,11 @@ const pool = require("./db");
 
 const router = express.Router();
 
-const USER_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+// How long a session can sit COMPLETELY IDLE before it's forced to log in
+// again. Because requireUserSession() below refreshes this on every call,
+// an active user effectively never hits this — it only matters if they
+// close the tab and don't come back for this long.
+const USER_SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours of inactivity
 
 const userSessions = new Map();
 
@@ -69,10 +94,18 @@ function requireUserSession(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   const session = token ? userSessions.get(token) : null;
+
   if (!session || Date.now() > session.expiresAt) {
     if (token) userSessions.delete(token);
     return res.status(401).json({ success: false, message: "Session expired. Please sign in again." });
   }
+
+  // Sliding expiry: every authenticated request pushes the expiry back out,
+  // so a session only dies from real inactivity, not a fixed clock from
+  // login time. This is what makes the session last "until sign out" for
+  // anyone actively using the dashboard.
+  session.expiresAt = Date.now() + USER_SESSION_TTL_MS;
+
   req.user = session;
   next();
 }
@@ -85,6 +118,19 @@ function requireTeacher(req, res, next) {
 }
 
 router.use(requireUserSession, requireTeacher);
+
+// ------------------------------------------------------------------
+// POST /api/teacher/logout — explicit sign-out. Not required (the
+// frontend already clears its localStorage token), but calling this lets
+// the SERVER drop the session immediately too, instead of waiting out the
+// idle TTL. Wire it up from the Sign Out button if you want that.
+// ------------------------------------------------------------------
+router.post("/logout", (req, res) => {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (token) userSessions.delete(token);
+  res.json({ success: true, message: "Signed out." });
+});
 
 // ------------------------------------------------------------------
 // Shared helper: confirms the signed-in teacher actually teaches this
@@ -249,6 +295,10 @@ router.delete("/assignments/:id", async (req, res) => {
 
 // ------------------------------------------------------------------
 // GET /api/teacher/students?assignmentId=123
+// Returns only the approved students who belong to the SAME class as the
+// given assignment — this is the route TeacherDashboard.jsx now calls
+// from its Students tab (previously that tab was a static placeholder and
+// never called this at all).
 // ------------------------------------------------------------------
 router.get("/students", async (req, res) => {
   const { assignmentId } = req.query;
