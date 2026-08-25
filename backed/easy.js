@@ -22,8 +22,22 @@ const nodemailer = require("nodemailer");
 const path = require("path");
 const pool = require("./db");
 
-// Import school-admin auth routes
+// Import school-admin AUTH routes (email/school-code confirmation, sign-in).
 const schoolAdminAuth = require("./home");
+
+// Import school-admin ACTION routes (classes, approvals, teachers, students,
+// notifications, CSV export).
+const schoolAdminRoutes = require("./schoolAdmin");
+
+// Import teacher-facing routes (classes, assignments, students) AND the
+// shared user-session store. See the big comment in teacher.js: this file
+// used to keep its OWN separate `userSessions` Map for
+// /api/users/login-google, which meant tokens issued there were invisible
+// to every /api/teacher/* route (they live in two different Maps). That's
+// fixed below by importing createUserSession from here instead of
+// declaring a local one.
+const teacherRoutes = require("./teacher");
+const { createUserSession } = teacherRoutes;
 
 const app = express();
 
@@ -58,8 +72,20 @@ if (allowedOrigins.length === 0) {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// Everything under /api/auth/school-admin/* is handled by home.js
+// Everything under /api/auth/school-admin/* is the sign-in flow (request
+// code / verify code) — handled by home.js.
 app.use("/api/auth/school-admin", schoolAdminAuth.router);
+
+// Everything under /api/school-admin/* is what the signed-in dashboard
+// (School_Admin.jsx) calls: classes, approvals, teachers, students,
+// notifications, CSV export — handled by schoolAdmin.js.
+app.use("/api/school-admin", schoolAdminRoutes.router);
+
+// Everything under /api/teacher/* is what the signed-in teacher dashboard
+// calls: their own classes, their own class+subject+period assignments,
+// and the approved students inside whichever class/period they've
+// selected — handled by teacher.js.
+app.use("/api/teacher", teacherRoutes.router);
 
 // ------------------------------------------------------------------
 // EMAIL SETUP — NODEMAILER + GMAIL APP PASSWORD
@@ -794,6 +820,10 @@ app.post("/api/users/register-google", async (req, res) => {
       });
     }
 
+    // NOTE: teachers are inserted exactly like students — 'pending_approval'
+    // status, no class/subject/period. Approving a teacher (schoolAdmin.js)
+    // never writes one either. A teacher only ever gets a class + subject +
+    // period by picking it themself, at sign-in time (see teacher.js).
     await pool.query(
       `INSERT INTO users
        (
@@ -854,31 +884,12 @@ app.post("/api/users/register-google", async (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// USER SESSIONS
-// ------------------------------------------------------------------
-
-const USER_SESSION_TTL_MS =
-  12 * 60 * 60 * 1000;
-
-const userSessions = new Map();
-
-function createUserSession(user) {
-  const token = crypto
-    .randomBytes(32)
-    .toString("hex");
-
-  userSessions.set(token, {
-    ...user,
-    expiresAt:
-      Date.now() + USER_SESSION_TTL_MS,
-  });
-
-  return token;
-}
-
-// ------------------------------------------------------------------
 // TEACHER / STUDENT LOGIN
 // ------------------------------------------------------------------
+// Session creation now comes from teacher.js's shared createUserSession
+// (imported at the top of this file) so a token minted here is valid on
+// every /api/teacher/* route — see the big comment at the top of
+// teacher.js for why that matters.
 
 app.post("/api/users/login-google", async (req, res) => {
   const {
@@ -923,12 +934,17 @@ app.post("/api/users/login-google", async (req, res) => {
 
     const user = result.rows[0];
 
-    if (user.status !== "pending") {
+    // users are inserted with status = 'pending_approval', approved into
+    // 'approved', rejected into 'rejected', and toggled 'approved' <->
+    // 'suspended' by the school-admin routes — compare against 'approved'.
+    if (user.status !== "approved") {
       return res.status(403).json({
         success: false,
         message:
           user.status === "rejected"
             ? "Your account was not approved by your school admin."
+            : user.status === "suspended"
+            ? "Your account has been suspended by your school admin."
             : "Your account is still waiting for approval from your school admin.",
       });
     }
@@ -941,6 +957,27 @@ app.post("/api/users/login-google", async (req, res) => {
       schoolId: user.school_id,
     });
 
+    // Teachers pick their own class + subject + period AFTER being
+    // approved (see teacher.js's POST /api/teacher/assignments) — hand
+    // back whatever they've already picked so Home.jsx knows whether to
+    // ask for a brand-new one, sign them straight into their only one, or
+    // let them choose among several.
+    let assignments;
+
+    if (role === "teacher") {
+      const assignmentsResult = await pool.query(
+        `SELECT ta.id, ta.subject, ta.period, ta.class_combination_id AS "classCombinationId",
+                cc.display_name AS "className"
+         FROM teacher_assignments ta
+         JOIN class_combinations cc ON cc.id = ta.class_combination_id
+         WHERE ta.teacher_id = $1
+         ORDER BY cc.display_name ASC, ta.period ASC`,
+        [user.id]
+      );
+
+      assignments = assignmentsResult.rows;
+    }
+
     res.json({
       success: true,
       token,
@@ -949,6 +986,7 @@ app.post("/api/users/login-google", async (req, res) => {
         email: user.email,
         role: user.role,
       },
+      ...(assignments ? { assignments } : {}),
     });
   } catch (error) {
     console.log(
@@ -1196,6 +1234,16 @@ app.post(
     }
   }
 );
+
+// ------------------------------------------------------------------
+// 404 FALLBACK — always JSON
+// ------------------------------------------------------------------
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `No route for ${req.method} ${req.originalUrl}`,
+  });
+});
 
 // ------------------------------------------------------------------
 // START SERVER
