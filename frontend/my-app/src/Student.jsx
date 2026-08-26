@@ -44,7 +44,7 @@ const RED_SOFT = "#FEECEC";
    FIX (was the root cause of "The server sent back something unreadable" and
    of notes/quizzes never showing up): this used to default API_BASE to ""
    (same-origin/relative), while teacher.jsx / TeacherDashboard.jsx point at
-   the backend explicitly (http://localhost:5000). If the React app is served
+   the backend explicitly (https://easy-class-work-records.onrender.com). If the React app is served
    from a different origin than the API (e.g. CRA dev server on :3000, API on
    :5000), every relative fetch here hit the FRONTEND's dev server instead of
    the backend, got back an HTML page instead of JSON, and response.json()
@@ -57,7 +57,7 @@ const RED_SOFT = "#FEECEC";
    window.ECW_API_BASE from index.html / a build-time env var so there's a
    single source of truth for both dashboards.
    ============================================================================ */
-const API_BASE = (typeof window !== "undefined" && window.ECW_API_BASE) || "http://localhost:5000";
+const API_BASE = (typeof window !== "undefined" && window.ECW_API_BASE) || "https://easy-class-work-records.onrender.com";
 const USER_SESSION_KEY = "ecw_user_session"; // same key teacher.jsx and login use
 
 function getSession() {

@@ -27,7 +27,7 @@ const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 // token under after Google sign-in, so this dashboard reads the SAME
 // session rather than keeping its own.
 // ------------------------------------------------------------------
-const API_BASE = "http://localhost:5000";
+const API_BASE = "https://easy-class-work-records.onrender.com";
 const USER_SESSION_KEY = "ecw_user_session";
 
 function getSession() {

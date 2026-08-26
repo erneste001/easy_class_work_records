@@ -33,7 +33,7 @@ import GoogleAuthButton from "./GoogleAuthButton.jsx";
    CONFIG
    ============================================================================ */
 
-const API_BASE = "http://localhost:5000";
+const API_BASE = "https://easy-class-work-records.onrender.com";
 const BRAND_NAME = "Easy Class Records System";
 const DEFAULT_REGISTRATION_FEE = "5000";
 

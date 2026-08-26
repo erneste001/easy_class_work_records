@@ -8,7 +8,7 @@ import {
   ArrowUpCircle, CheckSquare, Square, BellOff,
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:5000';
+const API_BASE = 'https://easy-class-work-records.onrender.com';
 const ADMIN_SESSION_KEY = 'ecw_admin_session'; // written by Home.jsx on login
 
 const t = {

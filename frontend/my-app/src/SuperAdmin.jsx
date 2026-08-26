@@ -26,7 +26,7 @@ const fmtDateTime = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d
 // you "approve" them purely in local state — nothing ever touched your
 // database. It's now wired to the real endpoints that already exist in
 // easy.js: GET /api/superadmin/schools, POST .../approve, POST .../reject.
-const API_BASE = 'http://localhost:5000';
+const API_BASE = 'https://easy-class-work-records.onrender.com';
 const SUPERADMIN_SESSION_KEY = 'ecw_superadmin_session'; // same key Home.jsx writes on login
 
 // Backend school.status values, mapped to a friendly label + color.

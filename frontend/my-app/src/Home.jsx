@@ -27,7 +27,7 @@ import {
 
 // Backend that issues and checks the school-admin email confirmation code,
 // and now also the teacher/student Google sign-up/sign-in routes.
-const API_BASE = "http://localhost:5000";
+const API_BASE = "https://easy-class-work-records.onrender.com";
 
 // localStorage key the admin session token is kept under, so a page
 // refresh on /dashboard/schoolAdmin doesn't lose the sign-in.
