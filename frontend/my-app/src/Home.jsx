@@ -1755,7 +1755,7 @@ export default function EasyClassWork() {
               <img src={logo} className="w-6 h-6 text-[#178754]" aria-hidden="true" />
             </span>
             <span className="ecw-heading font-bold text-[15px] text-neutral-900 leading-none">
-              Easy Class Records System itangishaka
+              Easy Class Records System
             </span>
           </a>
 
